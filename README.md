@@ -53,6 +53,8 @@ TBD
 
 In this fork:
 - [LoRA](https://arxiv.org/abs/2106.09685) for LoRA-finetuning
+- [Flash Attention](https://github.com/Dao-AILab/flash-attention) for flash attention on Fastspeech2
+- [RefineGAN](https://timedomain-tech.github.io/refinegan) for RefineGAN support
 
 ## Disclaimer
 
