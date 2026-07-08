@@ -143,6 +143,29 @@ max_updates: 100000
 
 num_valid_plots: 10
 val_check_interval: 2000
+# Optional .ds validation synthesis during variance training.
+# Speaker is always taken from val_with_ds.spk keys and overrides spk_mix/ph_spk_mix in .ds files.
+val_with_ds:
+  acoustic_ckpt_dir: null
+  acoustic_ckpt_steps: null
+  acoustic_vocoder: true
+  release_acoustic_after_val: false
+  release_variance_after_val: false
+  variance_ckpts:
+    dur:
+      ckpt_dir: null
+      ckpt_steps: null
+    pitch:
+      ckpt_dir: null
+      ckpt_steps: null
+    variance:
+      ckpt_dir: null
+      ckpt_steps: null
+  max_samples_per_val: null
+  seed: -1
+  spk:
+    CHANGE_ME_SPK:
+      - samples/valid/CHANGE_ME.ds
 num_ckpt_keep: 5
 permanent_ckpt_start: 60000
 permanent_ckpt_interval: 10000

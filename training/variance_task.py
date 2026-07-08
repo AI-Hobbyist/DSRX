@@ -15,6 +15,7 @@ from modules.metrics import (
 from modules.toplevel import DiffSingerVariance
 from utils.hparams import hparams
 from utils.plot import dur_to_figure, pitch_note_to_figure, curve_to_figure
+from training.variance_val_ds import VarianceDsValidationRunner
 
 matplotlib.use('Agg')
 
@@ -113,6 +114,10 @@ class VarianceTask(BaseTask):
             self.variance_prediction_list.append('tension')
         self.predict_variances = len(self.variance_prediction_list) > 0
         self.lambda_var_loss = hparams['lambda_var_loss']
+        self.val_ds_runner = None
+        val_with_ds = hparams.get('val_with_ds')
+        if VarianceDsValidationRunner.is_enabled(val_with_ds):
+            self.val_ds_runner = VarianceDsValidationRunner(val_with_ds)
         super()._finish_init()
 
     def _build_model(self):
@@ -303,6 +308,10 @@ class VarianceTask(BaseTask):
                             curve_name=name
                         )
         return losses, sample['size']
+
+    def _on_validation_epoch_end(self):
+        if self.val_ds_runner is not None:
+            self.val_ds_runner.run(self)
 
     ############
     # validation plots

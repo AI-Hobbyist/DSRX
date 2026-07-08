@@ -1,0 +1,447 @@
+import copy
+import json
+from collections import OrderedDict
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Dict, Iterable, List, Tuple
+
+import torch
+import yaml
+from lightning.pytorch.utilities.rank_zero import rank_zero_warn
+
+from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
+from utils.hparams import hparams
+from utils.plot import spec_to_figure
+
+
+@contextmanager
+def temporary_hparams(new_hparams: dict):
+    old_hparams = hparams.copy()
+    hparams.clear()
+    hparams.update(new_hparams)
+    try:
+        yield
+    finally:
+        hparams.clear()
+        hparams.update(old_hparams)
+
+
+class VarianceDsValidationRunner:
+    def __init__(self, cfg: dict):
+        if not isinstance(cfg, dict):
+            raise ValueError('val_with_ds must be a mapping.')
+        self.cfg = cfg
+        self.acoustic_ckpt_dir = self._resolve_path(cfg.get('acoustic_ckpt_dir'))
+        self.acoustic_ckpt_steps = cfg.get('acoustic_ckpt_steps')
+        self.acoustic_vocoder = bool(cfg.get('acoustic_vocoder', True))
+        self.release_acoustic_after_val = bool(cfg.get('release_acoustic_after_val', False))
+        self.release_variance_after_val = bool(cfg.get('release_variance_after_val', False))
+        self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
+        self.max_samples_per_val = cfg.get('max_samples_per_val')
+        self.seed = int(cfg.get('seed', -1))
+        self.spk_to_ds = self._normalize_spk_to_ds(cfg.get('spk') or {})
+        self.acoustic_hparams = None
+        self.acoustic_infer = None
+        self.variance_infers = {}
+        self._validated = False
+
+        if self.acoustic_ckpt_dir is None:
+            raise ValueError('val_with_ds.acoustic_ckpt_dir is required when val_with_ds.spk is set.')
+        if not self.spk_to_ds:
+            raise ValueError('val_with_ds.spk must contain at least one speaker and .ds file.')
+
+    @staticmethod
+    def is_enabled(cfg) -> bool:
+        return isinstance(cfg, dict) and bool(cfg.get('acoustic_ckpt_dir')) and bool(cfg.get('spk'))
+
+    @staticmethod
+    def _resolve_path(value):
+        if value is None or value == '':
+            return None
+        path = Path(value)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        return path
+
+    def _normalize_spk_to_ds(self, spk_cfg) -> Dict[str, List[Path]]:
+        if not isinstance(spk_cfg, dict):
+            raise ValueError('val_with_ds.spk must be a mapping from speaker name to .ds file list.')
+        normalized = {}
+        for spk, ds_files in spk_cfg.items():
+            if isinstance(ds_files, (str, Path)):
+                ds_files = [ds_files]
+            if not isinstance(ds_files, list):
+                raise ValueError(f'val_with_ds.spk.{spk} must be a .ds path or a list of .ds paths.')
+            normalized[str(spk)] = [self._resolve_path(p) for p in ds_files]
+        return normalized
+
+    def _normalize_variance_ckpts(self, ckpt_cfg) -> dict:
+        if not isinstance(ckpt_cfg, dict):
+            raise ValueError('val_with_ds.variance_ckpts must be a mapping.')
+        normalized = {}
+        stage_aliases = {
+            'dur': 'dur',
+            'duration': 'dur',
+            'pitch': 'pitch',
+            'variance': 'variance',
+            'var': 'variance'
+        }
+        for raw_stage, raw_value in ckpt_cfg.items():
+            stage = stage_aliases.get(str(raw_stage))
+            if stage is None:
+                raise ValueError(f"Unknown val_with_ds.variance_ckpts stage: '{raw_stage}'.")
+            if raw_value is None or raw_value == '':
+                continue
+            if isinstance(raw_value, (str, Path)):
+                ckpt_dir = raw_value
+                ckpt_steps = None
+            elif isinstance(raw_value, dict):
+                ckpt_dir = raw_value.get('ckpt_dir')
+                ckpt_steps = raw_value.get('ckpt_steps')
+            else:
+                raise ValueError(f'val_with_ds.variance_ckpts.{raw_stage} must be a path or mapping.')
+            if ckpt_dir is None or ckpt_dir == '':
+                continue
+            normalized[stage] = {
+                'ckpt_dir': self._resolve_path(ckpt_dir),
+                'ckpt_steps': ckpt_steps
+            }
+        return normalized
+
+    def _load_acoustic_hparams(self):
+        return self._load_ckpt_hparams(self.acoustic_ckpt_dir, 'acoustic')
+
+    @staticmethod
+    def _load_ckpt_hparams(ckpt_dir: Path, name: str):
+        config_path = ckpt_dir / 'config.yaml'
+        if not ckpt_dir.exists():
+            raise FileNotFoundError(f'val_with_ds {name} ckpt dir does not exist: {ckpt_dir}')
+        if not config_path.exists():
+            raise FileNotFoundError(f'{name} config.yaml not found in {ckpt_dir}')
+        with open(config_path, 'r', encoding='utf-8') as f:
+            loaded_hparams = yaml.safe_load(f) or {}
+        loaded_hparams['work_dir'] = str(ckpt_dir)
+        loaded_hparams['infer'] = True
+        loaded_hparams.setdefault('exp_name', ckpt_dir.name)
+        return loaded_hparams
+
+    @staticmethod
+    def _load_json(path: Path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _iter_ds_specs(self) -> Iterable[Tuple[str, Path]]:
+        count = 0
+        for spk, ds_files in self.spk_to_ds.items():
+            for ds_path in ds_files:
+                if self.max_samples_per_val is not None and count >= int(self.max_samples_per_val):
+                    return
+                yield spk, ds_path
+                count += 1
+
+    def _validate(self, task):
+        self.acoustic_hparams = self._load_acoustic_hparams()
+        acoustic_spk_map_path = self.acoustic_ckpt_dir / 'spk_map.json'
+        if self.acoustic_hparams.get('use_spk_id', False):
+            if not acoustic_spk_map_path.exists():
+                raise FileNotFoundError(f'Acoustic spk_map.json not found in {self.acoustic_ckpt_dir}')
+            acoustic_spk_map = self._load_json(acoustic_spk_map_path)
+            for spk in self.spk_to_ds:
+                if spk not in acoustic_spk_map:
+                    raise ValueError(f"Speaker '{spk}' from val_with_ds.spk is not in acoustic spk_map.json.")
+
+        current_model_used = any(
+            stage not in self.variance_ckpts and self._current_model_predicts(task, stage)
+            for stage in ('dur', 'pitch', 'variance')
+        )
+        if current_model_used and hparams.get('use_spk_id', False):
+            variance_spk_map_path = Path(hparams['work_dir']) / 'spk_map.json'
+            if not variance_spk_map_path.exists():
+                raise FileNotFoundError(f'Variance spk_map.json not found in {hparams["work_dir"]}')
+            variance_spk_map = self._load_json(variance_spk_map_path)
+            for spk in self.spk_to_ds:
+                if spk not in variance_spk_map:
+                    raise ValueError(f"Speaker '{spk}' from val_with_ds.spk is not in variance spk_map.json.")
+
+        for stage, ckpt in self.variance_ckpts.items():
+            ckpt_dir = ckpt['ckpt_dir']
+            stage_hparams = self._load_ckpt_hparams(ckpt_dir, f'{stage} variance')
+            ckpt['hparams'] = stage_hparams
+            if stage_hparams.get('use_spk_id', False):
+                spk_map_path = ckpt_dir / 'spk_map.json'
+                if not spk_map_path.exists():
+                    raise FileNotFoundError(f'{stage} variance spk_map.json not found in {ckpt_dir}')
+                spk_map = self._load_json(spk_map_path)
+                for spk in self.spk_to_ds:
+                    if spk not in spk_map:
+                        raise ValueError(
+                            f"Speaker '{spk}' from val_with_ds.spk is not in {stage} variance spk_map.json."
+                        )
+
+        for spk, ds_path in self._iter_ds_specs():
+            if ds_path is None or not ds_path.exists():
+                raise FileNotFoundError(f"val_with_ds.spk.{spk} contains missing .ds file: {ds_path}")
+            params = self._load_ds(ds_path)
+            if len(params) == 0:
+                raise ValueError(f'val_with_ds .ds file is empty: {ds_path}')
+
+        if self.acoustic_vocoder:
+            vocoder_ckpt = Path(self.acoustic_hparams.get('vocoder_ckpt', ''))
+            if not vocoder_ckpt.is_absolute():
+                vocoder_ckpt = Path.cwd() / vocoder_ckpt
+            if not vocoder_ckpt.exists():
+                raise FileNotFoundError(f'Acoustic vocoder ckpt not found: {vocoder_ckpt}')
+
+        self._validated = True
+
+    def _load_ds(self, ds_path: Path) -> List[OrderedDict]:
+        data = self._load_json(ds_path)
+        if not isinstance(data, list):
+            data = [data]
+        return [OrderedDict(item) for item in data]
+
+    @staticmethod
+    def _force_spk(params: List[OrderedDict], spk: str) -> List[OrderedDict]:
+        forced = []
+        spk_mix = {spk: 1.0}
+        for param in params:
+            param_copy = copy.deepcopy(param)
+            param_copy['spk_mix'] = spk_mix
+            param_copy['ph_spk_mix'] = spk_mix
+            forced.append(param_copy)
+        return forced
+
+    @staticmethod
+    def _stage_predictions(stage: str) -> set:
+        if stage == 'dur':
+            return {'dur'}
+        if stage == 'pitch':
+            return {'pitch'}
+        if stage == 'variance':
+            return set(VARIANCE_CHECKLIST)
+        raise ValueError(f'Unknown variance prediction stage: {stage}')
+
+    @staticmethod
+    def _current_model_predicts(task, stage: str) -> bool:
+        if stage == 'dur':
+            return bool(getattr(task.model.fs2, 'predict_dur', False))
+        if stage == 'pitch':
+            return bool(getattr(task.model, 'predict_pitch', False))
+        if stage == 'variance':
+            return bool(getattr(task.model, 'predict_variances', False))
+        return False
+
+    def _get_current_variance_infer(self, task, stage: str):
+        from inference.ds_variance import DiffSingerVarianceInfer
+
+        class TrainingVarianceInfer(DiffSingerVarianceInfer):
+            def __init__(self, variance_task, predictions: set):
+                self._training_model = variance_task.model
+                super().__init__(device=variance_task.device, ckpt_steps=None, predictions=predictions)
+
+            def build_model(self, ckpt_steps=None):
+                return self._training_model
+
+        return TrainingVarianceInfer(task, predictions=self._stage_predictions(stage))
+
+    def _get_external_variance_infer(self, task, stage: str):
+        if stage in self.variance_infers:
+            return self.variance_infers[stage]
+        from inference.ds_variance import DiffSingerVarianceInfer
+
+        ckpt = self.variance_ckpts[stage]
+        stage_hparams = ckpt.get('hparams') or self._load_ckpt_hparams(ckpt['ckpt_dir'], f'{stage} variance')
+        ckpt['hparams'] = stage_hparams
+        with temporary_hparams(stage_hparams):
+            infer_ins = DiffSingerVarianceInfer(
+                device=task.device,
+                ckpt_steps=ckpt.get('ckpt_steps'),
+                predictions=self._stage_predictions(stage)
+            )
+        self.variance_infers[stage] = (infer_ins, stage_hparams)
+        return self.variance_infers[stage]
+
+    def _iter_stage_infers(self, task):
+        for stage in ('dur', 'pitch', 'variance'):
+            if stage in self.variance_ckpts:
+                yield stage, self._get_external_variance_infer(task, stage)
+            elif self._current_model_predicts(task, stage):
+                yield stage, (self._get_current_variance_infer(task, stage), None)
+
+    def _complete_params(self, infer_ins, params: List[OrderedDict]) -> List[OrderedDict]:
+        import librosa
+
+        batches = []
+        predictor_flags = []
+        for i, param in enumerate(params):
+            if infer_ins.auto_completion_mode:
+                flag = (
+                    infer_ins.model.fs2.predict_dur and param.get('ph_dur') is None,
+                    infer_ins.model.predict_pitch and param.get('f0_seq') is None,
+                    infer_ins.model.predict_variances and any(
+                        param.get(v_name) is None for v_name in infer_ins.model.variance_prediction_list
+                    )
+                )
+            else:
+                predict_variances = infer_ins.model.predict_variances and infer_ins.global_predict_variances
+                predict_pitch = infer_ins.model.predict_pitch and (
+                    infer_ins.global_predict_pitch or (param.get('f0_seq') is None and predict_variances)
+                )
+                predict_dur = infer_ins.model.predict_dur and (
+                    infer_ins.global_predict_dur or (param.get('ph_dur') is None and (predict_pitch or predict_variances))
+                )
+                flag = (predict_dur, predict_pitch, predict_variances)
+            predictor_flags.append(flag)
+            batches.append(infer_ins.preprocess_input(
+                param, idx=i,
+                load_dur=not flag[0] and (flag[1] or flag[2]),
+                load_pitch=not flag[1] and flag[2]
+            ))
+
+        results = []
+        for param, flag, batch in zip(params, predictor_flags, batches):
+            if 'seed' in param:
+                torch.manual_seed(param['seed'] & 0xffff_ffff)
+                torch.cuda.manual_seed_all(param['seed'] & 0xffff_ffff)
+            elif self.seed >= 0:
+                torch.manual_seed(self.seed & 0xffff_ffff)
+                torch.cuda.manual_seed_all(self.seed & 0xffff_ffff)
+
+            param_copy = copy.deepcopy(param)
+            flag_saved = (
+                infer_ins.model.fs2.predict_dur,
+                infer_ins.model.predict_pitch,
+                infer_ins.model.predict_variances
+            )
+            (
+                infer_ins.model.fs2.predict_dur,
+                infer_ins.model.predict_pitch,
+                infer_ins.model.predict_variances
+            ) = flag
+            try:
+                dur_pred, pitch_pred, variance_pred = infer_ins.forward_model(batch)
+            finally:
+                (
+                    infer_ins.model.fs2.predict_dur,
+                    infer_ins.model.predict_pitch,
+                    infer_ins.model.predict_variances
+                ) = flag_saved
+
+            if dur_pred is not None:
+                dur_pred = dur_pred[0].cpu().numpy()
+                param_copy['ph_dur'] = ' '.join(str(round(dur, 6)) for dur in (dur_pred * infer_ins.timestep).tolist())
+            if pitch_pred is not None:
+                pitch_pred = pitch_pred[0].cpu().numpy()
+                f0_pred = librosa.midi_to_hz(pitch_pred)
+                param_copy['f0_seq'] = ' '.join(str(round(freq, 1)) for freq in f0_pred.tolist())
+                param_copy['f0_timestep'] = str(infer_ins.timestep)
+            if variance_pred is None:
+                variance_pred = {}
+            for v_name, v_tensor in variance_pred.items():
+                if v_name not in VARIANCE_CHECKLIST:
+                    continue
+                if infer_ins.auto_completion_mode and param.get(v_name) is not None:
+                    continue
+                if not infer_ins.auto_completion_mode and v_name not in infer_ins.variance_prediction_set:
+                    continue
+                v_pred = v_tensor[0].cpu().numpy()
+                param_copy[v_name] = ' '.join(str(round(v, 4)) for v in v_pred.tolist())
+                param_copy[f'{v_name}_timestep'] = str(infer_ins.timestep)
+            results.append(param_copy)
+        return results
+
+    def _complete_params_with_stage(self, task, stage: str, params: List[OrderedDict]) -> List[OrderedDict]:
+        for infer_stage, (infer_ins, stage_hparams) in self._iter_stage_infers(task):
+            if infer_stage != stage:
+                continue
+            if stage_hparams is None:
+                return self._complete_params(infer_ins, params)
+            with temporary_hparams(stage_hparams):
+                return self._complete_params(infer_ins, params)
+        return params
+
+    def _get_acoustic_infer(self, task):
+        if self.acoustic_infer is not None:
+            return self.acoustic_infer
+        with temporary_hparams(self.acoustic_hparams):
+            from inference.ds_acoustic import DiffSingerAcousticInfer
+            import modules.vocoders  # noqa: F401
+            self.acoustic_infer = DiffSingerAcousticInfer(
+                device=task.device,
+                load_vocoder=self.acoustic_vocoder,
+                ckpt_steps=self.acoustic_ckpt_steps
+            )
+        return self.acoustic_infer
+
+    def _release_acoustic_infer(self):
+        if self.acoustic_infer is None:
+            return
+        del self.acoustic_infer
+        self.acoustic_infer = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _release_variance_infers(self):
+        if not self.variance_infers:
+            return
+        self.variance_infers.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _log_acoustic(self, task, spk: str, ds_path: Path, params: List[OrderedDict]):
+        acoustic_infer = self._get_acoustic_infer(task)
+        with temporary_hparams(self.acoustic_hparams):
+            for idx, param in enumerate(params):
+                batch = acoustic_infer.preprocess_input(param, idx=idx)
+                mel = acoustic_infer.forward_model(batch)
+                tag_base = f'val_with_ds/{spk}/{ds_path.stem}_{idx}'
+                task.logger.all_rank_experiment.add_figure(
+                    f'{tag_base}/mel',
+                    spec_to_figure(
+                        mel[0],
+                        self.acoustic_hparams.get('mel_vmin'),
+                        self.acoustic_hparams.get('mel_vmax'),
+                        f'{spk} - {ds_path.stem} #{idx}'
+                    ),
+                    global_step=task.global_step
+                )
+                if self.acoustic_vocoder:
+                    wav = acoustic_infer.run_vocoder(mel, f0=batch['f0'])
+                    task.logger.all_rank_experiment.add_audio(
+                        f'{tag_base}/audio',
+                        wav[0].detach().cpu(),
+                        sample_rate=self.acoustic_hparams['audio_sample_rate'],
+                        global_step=task.global_step
+                    )
+
+    @torch.no_grad()
+    def run(self, task):
+        if getattr(task, 'global_rank', 0) != 0:
+            return
+        if not self._validated:
+            self._validate(task)
+
+        was_training = task.model.training
+        task.model.eval()
+        try:
+            specs = list(self._iter_ds_specs())
+            success_count = 0
+            for spk, ds_path in specs:
+                try:
+                    params = self._force_spk(self._load_ds(ds_path), spk)
+                    completed_params = params
+                    for stage in ('dur', 'pitch', 'variance'):
+                        completed_params = self._complete_params_with_stage(task, stage, completed_params)
+                    self._log_acoustic(task, spk, ds_path, completed_params)
+                    success_count += 1
+                except Exception as exc:
+                    rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
+            if specs and success_count == 0:
+                raise RuntimeError('val_with_ds failed for all configured .ds files.')
+        finally:
+            if self.release_variance_after_val:
+                self._release_variance_infers()
+            if self.release_acoustic_after_val:
+                self._release_acoustic_infer()
+            if was_training:
+                task.model.train()
