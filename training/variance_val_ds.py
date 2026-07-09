@@ -36,6 +36,8 @@ class VarianceDsValidationRunner:
         self.acoustic_vocoder = bool(cfg.get('acoustic_vocoder', True))
         self.release_acoustic_after_val = bool(cfg.get('release_acoustic_after_val', False))
         self.release_variance_after_val = bool(cfg.get('release_variance_after_val', False))
+        self.overwrite_ds_dur = bool(cfg.get('overwrite_ds_dur', False))
+        self.overwrite_ds_pitch = bool(cfg.get('overwrite_ds_pitch', False))
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
@@ -291,6 +293,10 @@ class VarianceDsValidationRunner:
                     infer_ins.global_predict_dur or (param.get('ph_dur') is None and (predict_pitch or predict_variances))
                 )
                 flag = (predict_dur, predict_pitch, predict_variances)
+            if param.get('ph_dur') is not None and not self.overwrite_ds_dur:
+                flag = (False, flag[1], flag[2])
+            if param.get('f0_seq') is not None and not self.overwrite_ds_pitch:
+                flag = (flag[0], False, flag[2])
             predictor_flags.append(flag)
             batches.append(infer_ins.preprocess_input(
                 param, idx=i,

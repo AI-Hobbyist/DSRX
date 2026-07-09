@@ -30,6 +30,8 @@ val_with_ds:
   acoustic_vocoder: true
   release_acoustic_after_val: false
   release_variance_after_val: false
+  overwrite_ds_dur: false
+  overwrite_ds_pitch: false
   variance_ckpts:
     dur:
       ckpt_dir: null
@@ -57,6 +59,8 @@ val_with_ds:
 - `acoustic_vocoder` 控制是否试听。为 `false` 时只记录 mel figure；为 `true` 时同时记录 audio。
 - `release_acoustic_after_val` 控制每次 validation 结束后是否释放 acoustic 模型与 vocoder。默认 `false` 表示缓存复用；设为 `true` 可降低验证后的显存占用，但下次 validation 会重新加载 acoustic。
 - `release_variance_after_val` 控制每次 validation 结束后是否释放 `variance_ckpts` 中加载的外部分阶段 variance 模型。默认 `false` 表示缓存复用；设为 `true` 可降低验证后的显存占用，但下次 validation 会重新加载这些外部 variance ckpt。当前正在训练的内存模型不会被释放。
+- `overwrite_ds_dur` 控制 `.ds` 已经包含 `ph_dur` 时是否仍然重算 dur。默认 `false` 表示保留原 `.ds` 时长；如果缺少 `ph_dur`，仍会在可用时补全。
+- `overwrite_ds_pitch` 控制 `.ds` 已经包含 `f0_seq` 时是否仍然重算 pitch。默认 `false` 表示保留原 `.ds` 音高；如果缺少 `f0_seq`，仍会在可用时补全。
 - `variance_ckpts` 可选，用于 dur / pitch / variance 是三个独立模型的情况。某个阶段配置了 `ckpt_dir` 时，该阶段使用对应外部 variance ckpt；未配置时，若当前正在训练的模型支持该阶段，则使用当前内存模型；两者都没有时跳过该阶段。
 - `max_samples_per_val` 可选，用于限制每次 validation 里实际合成的 `.ds` 数量，避免验证太慢。
 - `seed` 可选，传给当前 variance 采样，默认 `-1` 表示不固定。

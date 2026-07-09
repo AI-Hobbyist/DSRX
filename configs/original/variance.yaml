@@ -139,6 +139,8 @@ val_with_ds:
   acoustic_vocoder: true
   release_acoustic_after_val: false
   release_variance_after_val: false
+  overwrite_ds_dur: false
+  overwrite_ds_pitch: false
   variance_ckpts:
     dur:
       ckpt_dir: null
