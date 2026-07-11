@@ -47,6 +47,55 @@ class XavierUniformInitLinear(torch.nn.Linear):
             nn.init.constant_(self.bias, 0.)
 
 
+class Mixed_LayerNorm(nn.Module):
+    def __init__(
+            self,
+            channels: int,
+            condition_channels: int,
+            beta_distribution_concentration: float = 0.2,
+            eps: float = 1e-5,
+            bias: bool = True
+    ):
+        super().__init__()
+        self.channels = channels
+        self.eps = eps
+
+        self.beta_distribution = torch.distributions.Beta(
+            beta_distribution_concentration,
+            beta_distribution_concentration
+        )
+
+        self.affine = XavierUniformInitLinear(condition_channels, channels * 2, bias=bias)
+        if self.affine.bias is not None:
+            self.affine.bias.data[:channels] = 0  # betas (shift)
+            self.affine.bias.data[channels:] = 1  # gammas (scale)
+
+    def forward(
+            self,
+            x: torch.FloatTensor,
+            condition: torch.FloatTensor  # -> shape [Batch, Cond_d]
+    ) -> torch.FloatTensor:
+        x = F.layer_norm(x, normalized_shape=(self.channels,), weight=None, bias=None, eps=self.eps)
+
+        affine_params = self.affine(condition)
+        if affine_params.ndim == 2:
+            affine_params = affine_params.unsqueeze(1)
+        betas, gammas = torch.split(affine_params, self.channels, dim=-1)
+
+        if not self.training or x.size(0) == 1:
+            return gammas * x + betas
+
+        shuffle_indices = torch.randperm(x.size(0), device=x.device)
+        shuffled_betas = betas[shuffle_indices]
+        shuffled_gammas = gammas[shuffle_indices]
+
+        beta_samples = self.beta_distribution.sample((x.size(0), 1, 1)).to(x.device)
+        mixed_betas = beta_samples * betas + (1 - beta_samples) * shuffled_betas
+        mixed_gammas = beta_samples * gammas + (1 - beta_samples) * shuffled_gammas
+
+        return mixed_gammas * x + mixed_betas
+
+
 class SinusoidalPositionalEmbedding(nn.Module):
     """This module produces sinusoidal positional embeddings of any length.
 
@@ -278,10 +327,19 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
 class EncSALayer(nn.Module):
     def __init__(self, c, num_heads, dropout, attention_dropout=0.1,
                  relu_dropout=0.1, kernel_size=9, act='gelu',
-                 rotary_embed=None, attention_type='normal'):
+                 rotary_embed=None, attention_type='normal',
+                 layer_idx=None, mix_ln_layer=None):
         super().__init__()
         self.dropout = dropout
-        self.layer_norm1 = LayerNorm(c)
+        self.use_mix_ln = (
+                layer_idx is not None
+                and mix_ln_layer is not None
+                and layer_idx in mix_ln_layer
+        )
+        if self.use_mix_ln:
+            self.layer_norm1 = Mixed_LayerNorm(c, c)
+        else:
+            self.layer_norm1 = LayerNorm(c)
         if attention_type == 'flash':
             self.self_attn = MultiheadSelfAttentionWithRoPE(
                 c, num_heads, dropout=attention_dropout, bias=False,
@@ -299,12 +357,15 @@ class EncSALayer(nn.Module):
                 rotary_embed=rotary_embed, use_flash=False
             )
             self.attn_backend = 'custom'
-        self.layer_norm2 = LayerNorm(c)
+        if self.use_mix_ln:
+            self.layer_norm2 = Mixed_LayerNorm(c, c)
+        else:
+            self.layer_norm2 = LayerNorm(c)
         self.ffn = TransformerFFNLayer(
             c, 4 * c, kernel_size=kernel_size, dropout=relu_dropout, act=act
         )
 
-    def forward(self, x, encoder_padding_mask=None, **kwargs):
+    def forward(self, x, encoder_padding_mask=None, cond=None, **kwargs):
         layer_norm_training = kwargs.get('layer_norm_training', None)
         if layer_norm_training is not None:
             self.layer_norm1.training = layer_norm_training
@@ -316,7 +377,10 @@ class EncSALayer(nn.Module):
             )
 
         residual = x
-        x = self.layer_norm1(x)
+        if self.use_mix_ln:
+            x = self.layer_norm1(x, cond)
+        else:
+            x = self.layer_norm1(x)
         if self.attn_backend == 'custom':
             x = self.self_attn(x, key_padding_mask=encoder_padding_mask)
         else:
@@ -333,7 +397,10 @@ class EncSALayer(nn.Module):
         x = x * (1 - encoder_padding_mask.float())[..., None]
 
         residual = x
-        x = self.layer_norm2(x)
+        if self.use_mix_ln:
+            x = self.layer_norm2(x, cond)
+        else:
+            x = self.layer_norm2(x)
         x = self.ffn(x)
         x = F.dropout(x, self.dropout, training=self.training)
         x = residual + x

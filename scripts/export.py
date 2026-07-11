@@ -112,6 +112,15 @@ def main():
     required=False,
     help='(for multi-speaker models) Freeze one speaker or speaker mixture into the model.'
 )
+@click.option(
+    '--precision', type=click.Choice(['fp32', 'fp16', 'bf16', 'all']),
+    default='fp32', show_default=True,
+    help='Target precision for ONNX export.'
+)
+@click.option(
+    '--quantize', is_flag=True, default=False,
+    help='Also export int8 quantized ONNX model.'
+)
 def acoustic(
         exp: str,
         ckpt: int = None,
@@ -119,7 +128,9 @@ def acoustic(
         freeze_gender: float = 0.,
         freeze_velocity: bool = False,
         export_spk: List[str] = None,
-        freeze_spk: str = None
+        freeze_spk: str = None,
+        precision: str = 'fp32',
+        quantize: bool = False,
 ):
     # Validate arguments
     if export_spk and freeze_spk:
@@ -148,7 +159,9 @@ def acoustic(
         freeze_gender=freeze_gender,
         freeze_velocity=freeze_velocity,
         export_spk=export_spk_mix,
-        freeze_spk=freeze_spk_mix
+        freeze_spk=freeze_spk_mix,
+        precision=precision,
+        quantize=quantize,
     )
     try:
         exporter.export(out)
@@ -265,11 +278,22 @@ def variance(
     required=False, default='nsf_hifigan', show_default=False,
     help='Specify filename (without suffix) of the target model file.'
 )
+@click.option(
+    '--precision', type=click.Choice(['fp32', 'fp16', 'all']),
+    default='fp32', show_default=True,
+    help='Target precision for ONNX export.'
+)
+@click.option(
+    '--quantize', is_flag=True, default=False,
+    help='Also export int8 quantized ONNX model.'
+)
 def nsf_hifigan(
         config: pathlib.Path,
         ckpt: pathlib.Path = None,
         out: pathlib.Path = None,
-        name: str = None
+        name: str = None,
+        precision: str = 'fp32',
+        quantize: bool = False,
 ):
     # Check arguments
     if out is None:
@@ -289,7 +313,9 @@ def nsf_hifigan(
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         cache_dir=root_dir / 'deployment' / 'cache',
         model_path=model_path,
-        model_name=name
+        model_name=name,
+        precision=precision,
+        quantize=quantize,
     )
     try:
         exporter.export(out)

@@ -95,6 +95,22 @@ pl_trainer_strategy:
 nccl_p2p: true
 
 ###########
+# quantization
+###########
+quantization:
+  enabled: false
+  backend: 'fbgemm'
+  approach: 'static'
+  qat_epochs: 10
+  activation_dtype: 'quint8'
+  weight_dtype: 'qint8'
+  fuse_modules: true
+  exclude_layers:
+    - 'txt_embed'
+    - 'spk_embed'
+    - 'lang_embed'
+
+###########
 # finetune
 ###########
 finetune_enabled: false

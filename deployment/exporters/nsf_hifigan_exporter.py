@@ -20,9 +20,11 @@ class NSFHiFiGANExporter(BaseExporter):
             device: Union[str, torch.device] = 'cpu',
             cache_dir: Path = None,
             model_path: Path = None,
-            model_name: str = 'nsf_hifigan'
+            model_name: str = 'nsf_hifigan',
+            precision: str = 'fp32',
+            quantize: bool = False,
     ):
-        super().__init__(device=device, cache_dir=cache_dir)
+        super().__init__(device=device, cache_dir=cache_dir, precision=precision, quantize=quantize)
         self.model_path = model_path
         self.model_name = model_name
         self.vocoder_pitch_controllable = False
@@ -54,9 +56,34 @@ class NSFHiFiGANExporter(BaseExporter):
     def export_model(self, path: Path):
         self._torch_export_model()
         model_onnx = self._optimize_model_graph(onnx.load(self.model_cache_path))
-        onnx.save(model_onnx, path)
         self.model_cache_path.unlink()
-        print(f'| export model => {path}')
+
+        base_stem = str(path).replace('.onnx', '')
+
+        for prec in self.export_precisions:
+            if prec == 'fp32':
+                out_path = path
+                model_to_save = model_onnx
+            elif prec == 'fp16':
+                out_path = Path(f'{base_stem}_fp16.onnx')
+                print(f'| converting to float16...')
+                model_to_save = self._convert_onnx_to_fp16(model_onnx)
+            else:
+                continue
+
+            onnx.save(model_to_save, out_path)
+            print(f'| export model => {out_path}')
+
+            if prec == 'fp32' and self.export_quantize:
+                int8_path = Path(f'{base_stem}_int8.onnx')
+                print(f'| quantizing to int8...')
+                q_cfg = hparams.get('quantization', {})
+                approach = q_cfg.get('approach', 'static') if isinstance(q_cfg, dict) else 'static'
+                if approach == 'static':
+                    self._quantize_onnx_static(str(out_path), str(int8_path))
+                else:
+                    self._quantize_onnx_dynamic(str(out_path), str(int8_path))
+                print(f'| export model => {int8_path}')
 
     def export_attachments(self, path: Path):
         config_path = path / 'vocoder.yaml'

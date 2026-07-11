@@ -54,12 +54,28 @@ use_lang_id: true
 num_lang: 2
 use_spk_id: true
 num_spk: 14
+use_mix_ln: false
+mix_ln_layer: [0, 2]
 use_energy_embed: false
 use_breathiness_embed: false
 use_voicing_embed: false
 use_tension_embed: false
 use_key_shift_embed: true
 use_speed_embed: true
+
+# quantization (overrides base.yaml if set)
+quantization:
+  enabled: false
+  backend: 'fbgemm'
+  approach: 'static'
+  qat_epochs: 10
+  activation_dtype: 'quint8'
+  weight_dtype: 'qint8'
+  fuse_modules: true
+  exclude_layers:
+    - 'txt_embed'
+    - 'spk_embed'
+    - 'lang_embed'
 
 diffusion_type: reflow
 time_scale_factor: 1000

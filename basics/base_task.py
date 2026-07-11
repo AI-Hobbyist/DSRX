@@ -192,11 +192,47 @@ class BaseTask(pl.LightningModule):
             self.freeze_params()
         if hparams['finetune_enabled'] and get_latest_checkpoint_path(pathlib.Path(hparams['work_dir'])) is None:
             self.load_finetune_ckpt(self.load_pre_train_model())
+        # QAT preparation (after weight loading, before training)
+        self._prepare_qat()
         self.print_arch()
 
     @rank_zero_only
     def print_arch(self):
         utils.print_arch(self.model)
+
+    def _prepare_qat(self):
+        """Prepare the model for Quantization-Aware Training if enabled in config."""
+        q_cfg = hparams.get('quantization', {})
+        if not isinstance(q_cfg, dict) or not q_cfg.get('enabled', False):
+            return
+        try:
+            from utils.precision import prepare_qat_model
+            rank_zero_info(
+                f"Preparing model for QAT (backend={q_cfg.get('backend', 'fbgemm')}, "
+                f"approach={q_cfg.get('approach', 'static')})..."
+            )
+            self.model = prepare_qat_model(
+                self.model,
+                backend=q_cfg.get('backend', 'fbgemm'),
+                exclude_layers=q_cfg.get('exclude_layers', []),
+                fuse_modules=q_cfg.get('fuse_modules', True),
+            )
+            rank_zero_info("QAT preparation complete.")
+        except Exception as e:
+            rank_zero_info(f"QAT preparation skipped: {e}")
+
+    def convert_qat_to_quantized(self):
+        """Convert a QAT-trained model to a fully quantized (int8) model."""
+        q_cfg = hparams.get('quantization', {})
+        if not isinstance(q_cfg, dict) or not q_cfg.get('enabled', False):
+            return
+        try:
+            from utils.precision import convert_qat_model
+            rank_zero_info("Converting QAT model to quantized (int8) model...")
+            self.model = convert_qat_model(self.model)
+            rank_zero_info("Quantization conversion complete.")
+        except Exception as e:
+            rank_zero_info(f"Quantization conversion skipped: {e}")
 
     def build_losses_and_metrics(self):
         raise NotImplementedError()

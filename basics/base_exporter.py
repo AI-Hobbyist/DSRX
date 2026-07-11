@@ -2,12 +2,17 @@ import json
 import pathlib
 import shutil
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
 
 from utils.hparams import hparams
+from utils.precision import (
+    PrecisionContext,
+    resolve_dtype,
+    VALID_EXPORT_PRECISIONS,
+)
 
 
 class BaseExporter:
@@ -15,12 +20,80 @@ class BaseExporter:
             self,
             device: Union[str, torch.device] = None,
             cache_dir: Path = None,
+            precision: str = 'fp32',
+            quantize: bool = False,
             **kwargs
     ):
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.cache_dir: Path = cache_dir.resolve() if cache_dir is not None \
             else Path(__file__).parent.parent / 'deployment' / 'cache'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Precision settings
+        if precision == 'all':
+            self.export_precisions = ['fp32', 'fp16', 'bf16']
+        elif precision in VALID_EXPORT_PRECISIONS:
+            self.export_precisions = [precision]
+        else:
+            raise ValueError(
+                f"Invalid precision '{precision}'. "
+                f"Valid: {sorted(VALID_EXPORT_PRECISIONS)}"
+            )
+        self.export_quantize = quantize
+        self._precision_ctx = PrecisionContext('fp32', device_type=self.device.type)
+
+    def _get_precision_suffix(self, precision: str) -> str:
+        """Return file suffix for a given precision (e.g., '_fp16')."""
+        if precision == 'fp32':
+            return ''
+        return f'_{precision}'
+
+    def _convert_model_to_precision(self, model: nn.Module, precision: str) -> nn.Module:
+        """Convert model to target precision for export."""
+        if precision == 'fp32':
+            return model
+        elif precision == 'fp16':
+            return model.half()
+        elif precision == 'bf16':
+            return model.to(torch.bfloat16)
+        else:
+            raise ValueError(f"Unsupported export precision: {precision}")
+
+    @staticmethod
+    def _convert_onnx_to_fp16(onnx_model, keep_io_types: bool = True):
+        """Convert float32 ONNX model to float16."""
+        import onnx
+        from onnxconverter_common import float16
+        return float16.convert_float_to_float16(onnx_model, keep_io_types=keep_io_types)
+
+    @staticmethod
+    def _quantize_onnx_static(model_path: str, output_path: str, calibration_reader=None):
+        """Apply static int8 quantization to an ONNX model."""
+        from onnxruntime.quantization import quantize_static, QuantType
+        if calibration_reader is None:
+            from utils.calibration import create_calibration_reader
+            calibration_reader = create_calibration_reader()
+        quantize_static(
+            model_input=model_path,
+            model_output=output_path,
+            calibration_data_reader=calibration_reader,
+            quant_format=QuantType.QInt8,
+            activation_type=QuantType.QInt8,
+            weight_type=QuantType.QInt8,
+            per_channel=True,
+            reduce_range=True,
+        )
+
+    @staticmethod
+    def _quantize_onnx_dynamic(model_path: str, output_path: str):
+        """Apply dynamic int8 quantization to an ONNX model."""
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+        quantize_dynamic(
+            model_input=model_path,
+            model_output=output_path,
+            weight_type=QuantType.QInt8,
+            per_channel=True,
+        )
 
     # noinspection PyMethodMayBeStatic
     def build_spk_map(self) -> dict:

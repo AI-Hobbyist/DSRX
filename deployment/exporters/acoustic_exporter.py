@@ -24,9 +24,11 @@ class DiffSingerAcousticExporter(BaseExporter):
             freeze_gender: float = None,
             freeze_velocity: bool = False,
             export_spk: List[Tuple[str, Dict[str, float]]] = None,
-            freeze_spk: Tuple[str, Dict[str, float]] = None
+            freeze_spk: Tuple[str, Dict[str, float]] = None,
+            precision: str = 'fp32',
+            quantize: bool = False,
     ):
-        super().__init__(device=device, cache_dir=cache_dir)
+        super().__init__(device=device, cache_dir=cache_dir, precision=precision, quantize=quantize)
         # Basic attributes
         self.model_name: str = hparams['exp_name']
         self.ckpt_steps: int = ckpt_steps
@@ -132,11 +134,113 @@ class DiffSingerAcousticExporter(BaseExporter):
         self._torch_export_model()
         fs2_aux_onnx = self._optimize_fs2_aux_graph(onnx.load(self.fs2_aux_cache_path))
         diffusion_onnx = self._optimize_diffusion_graph(onnx.load(self.diffusion_cache_path))
-        model_onnx = self._merge_fs2_aux_diffusion_graphs(fs2_aux_onnx, diffusion_onnx)
-        onnx.save(model_onnx, path)
+        merged_onnx = self._merge_fs2_aux_diffusion_graphs(fs2_aux_onnx, diffusion_onnx)
         self.fs2_aux_cache_path.unlink()
         self.diffusion_cache_path.unlink()
-        print(f'| export model => {path}')
+
+        base_stem = str(path).replace('.onnx', '')
+
+        for prec in self.export_precisions:
+            if prec == 'fp32':
+                out_path = path
+                model_to_save = merged_onnx
+            elif prec == 'fp16':
+                out_path = Path(f'{base_stem}_fp16.onnx')
+                print(f'| converting to float16...')
+                model_to_save = self._convert_onnx_to_fp16(merged_onnx)
+            elif prec == 'bf16':
+                # ONNX does not have native bf16 graph conversion yet;
+                # we export via PyTorch bf16 model instead
+                out_path = Path(f'{base_stem}_bf16.onnx')
+                print(f'| exporting bfloat16 model...')
+                model_to_save = self._export_bf16_model()
+                onnx.save(model_to_save, out_path)
+                print(f'| export model => {out_path}')
+                continue
+            else:
+                continue
+
+            onnx.save(model_to_save, out_path)
+            print(f'| export model => {out_path}')
+
+            # Optionally produce an int8 variant from the fp32 ONNX
+            if prec == 'fp32' and self.export_quantize:
+                int8_path = Path(f'{base_stem}_int8.onnx')
+                print(f'| quantizing to int8...')
+                q_cfg = hparams.get('quantization', {})
+                approach = q_cfg.get('approach', 'static') if isinstance(q_cfg, dict) else 'static'
+                if approach == 'static':
+                    self._quantize_onnx_static(str(out_path), str(int8_path))
+                else:
+                    self._quantize_onnx_dynamic(str(out_path), str(int8_path))
+                print(f'| export model => {int8_path}')
+
+    def _export_bf16_model(self):
+        """Export via torch.onnx with the model cast to bfloat16."""
+        import copy
+        bf16_model = copy.deepcopy(self.model)
+        bf16_model = bf16_model.to(torch.bfloat16)
+
+        # Re-do the torch export with bf16 model
+        n_frames = 10
+        tokens = torch.LongTensor([[1]]).to(self.device)
+        durations = torch.LongTensor([[n_frames]]).to(self.device)
+        f0 = torch.FloatTensor([[440.] * n_frames]).to(self.device)
+        variances = {
+            v_name: torch.zeros(1, n_frames, dtype=torch.bfloat16, device=self.device)
+            for v_name in self.model.fs2.variance_embed_list
+        }
+        kwargs: Dict[str, torch.Tensor] = {}
+        arguments = (tokens, durations, f0, variances, kwargs)
+        input_names = ['tokens', 'durations', 'f0'] + self.model.fs2.variance_embed_list
+        dynamix_axes = {
+            'tokens': {1: 'n_tokens'},
+            'durations': {1: 'n_tokens'},
+            'f0': {1: 'n_frames'},
+            **{v_name: {1: 'n_frames'} for v_name in self.model.fs2.variance_embed_list},
+        }
+        if hparams['use_key_shift_embed'] and self.expose_gender:
+            kwargs['gender'] = torch.rand((1, n_frames), dtype=torch.bfloat16, device=self.device)
+            input_names.append('gender')
+            dynamix_axes['gender'] = {1: 'n_frames'}
+        if hparams['use_speed_embed'] and self.expose_velocity:
+            kwargs['velocity'] = torch.rand((1, n_frames), dtype=torch.bfloat16, device=self.device)
+            input_names.append('velocity')
+            dynamix_axes['velocity'] = {1: 'n_frames'}
+        if hparams['use_spk_id'] and not self.freeze_spk:
+            kwargs['spk_embed'] = torch.rand(
+                (1, n_frames, hparams['hidden_size']), dtype=torch.bfloat16, device=self.device
+            )
+            input_names.append('spk_embed')
+            dynamix_axes['spk_embed'] = {1: 'n_frames'}
+        if self.use_lang_id:
+            kwargs['languages'] = torch.zeros_like(tokens)
+            input_names.append('languages')
+            dynamix_axes['languages'] = {1: 'n_tokens'}
+        dynamix_axes['condition'] = {1: 'n_frames'}
+
+        output_names = ['condition']
+        if self.model.use_shallow_diffusion:
+            output_names.append('aux_mel')
+            dynamix_axes['aux_mel'] = {1: 'n_frames'}
+
+        bf16_fs2_path = self.cache_dir / 'fs2_bf16.onnx'
+        torch.onnx.export(
+            bf16_model.view_as_fs2_aux(),
+            arguments,
+            bf16_fs2_path,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamix_axes,
+            opset_version=15,
+        )
+
+        # Optimize and merge with diffusion (bf16 diffusion is same as fp32 for now)
+        fs2_bf16 = self._optimize_fs2_aux_graph(onnx.load(bf16_fs2_path))
+        diff_bf16 = self._optimize_diffusion_graph(onnx.load(self.diffusion_cache_path))
+        merged_bf16 = self._merge_fs2_aux_diffusion_graphs(fs2_bf16, diff_bf16)
+        bf16_fs2_path.unlink()
+        return merged_bf16
 
     def export_attachments(self, path: Path):
         for spk in self.export_spk:

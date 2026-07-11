@@ -2,6 +2,7 @@ import json
 import pathlib
 from collections import OrderedDict
 from typing import Dict
+import contextlib
 
 import numpy as np
 import torch
@@ -20,9 +21,15 @@ from utils.phoneme_utils import load_phoneme_dictionary
 
 
 class DiffSingerAcousticInfer(BaseSVSInfer):
-    def __init__(self, device=None, load_model=True, load_vocoder=True, ckpt_steps=None):
+    def __init__(self, device=None, load_model=True, load_vocoder=True, ckpt_steps=None, dtype='fp32'):
         super().__init__(device=device)
+        self.dtype = dtype
+        self._precision_ctx = None
         if load_model:
+            from utils.precision import PrecisionContext
+            self._precision_ctx = PrecisionContext(dtype, device_type=self.device.type)
+
+            self.variance_checklist = []
             self.variance_checklist = []
 
             self.variances_to_embed = set()
@@ -93,6 +100,9 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
         else:
             load_ckpt(model, hparams['work_dir'], ckpt_steps=ckpt_steps,
                       prefix_in_ckpt='model', strict=True, device=self.device)
+        # Convert to target precision
+        if self._precision_ctx is not None:
+            model = self._precision_ctx.convert_model(model)
         return model
 
     def build_vocoder(self):
@@ -259,13 +269,16 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                 )  # => [B, T, H]
         else:
             spk_mix_embed = None
-        mel_pred: ShallowDiffusionOutput = self.model(
-            txt_tokens,  languages=sample.get('languages'),
-            mel2ph=sample['mel2ph'], f0=sample['f0'], **variances,
-            key_shift=sample.get('key_shift'), speed=sample.get('speed'),
-            spk_mix_embed=spk_mix_embed,
-            infer=True
-        )
+        # Run model under autocast if precision ctx is configured
+        ctx = self._precision_ctx.autocast() if self._precision_ctx is not None else contextlib.nullcontext()
+        with ctx:
+            mel_pred: ShallowDiffusionOutput = self.model(
+                txt_tokens,  languages=sample.get('languages'),
+                mel2ph=sample['mel2ph'], f0=sample['f0'], **variances,
+                key_shift=sample.get('key_shift'), speed=sample.get('speed'),
+                spk_mix_embed=spk_mix_embed,
+                infer=True
+            )
         return mel_pred.diff_out
 
     @torch.no_grad()
