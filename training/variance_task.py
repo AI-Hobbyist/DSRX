@@ -115,6 +115,7 @@ class VarianceTask(BaseTask):
         self.predict_variances = len(self.variance_prediction_list) > 0
         self.lambda_var_loss = hparams['lambda_var_loss']
         self.val_ds_runner = None
+        self._skip_val_ds_on_validation_end = False
         val_with_ds = hparams.get('val_with_ds')
         if VarianceDsValidationRunner.is_enabled(val_with_ds):
             self.val_ds_runner = VarianceDsValidationRunner(val_with_ds)
@@ -309,8 +310,21 @@ class VarianceTask(BaseTask):
                         )
         return losses, sample['size']
 
-    def _on_validation_epoch_end(self):
+    def on_validation_epoch_end(self):
+        was_skipping = self.skip_immediate_validation
+        super().on_validation_epoch_end()
+        if was_skipping:
+            self._skip_val_ds_on_validation_end = True
+
+    def on_validation_end(self):
         if self.val_ds_runner is not None:
+            if getattr(self.trainer, 'sanity_checking', False):
+                return
+            if getattr(self.trainer, 'testing', False):
+                return
+            if self._skip_val_ds_on_validation_end or self.skip_immediate_ckpt_save:
+                self._skip_val_ds_on_validation_end = False
+                return
             self.val_ds_runner.run(self)
 
     ############

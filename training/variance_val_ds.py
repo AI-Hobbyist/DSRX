@@ -1,9 +1,12 @@
 import copy
 import json
+import multiprocessing
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
@@ -16,6 +19,11 @@ from utils.hparams import hparams
 from utils.plot import spec_to_figure
 
 
+_VAL_WITH_DS_WORKER_CTX = None
+_VAL_WITH_DS_WORKER_RUNNER = None
+_VAL_WITH_DS_WORKER_TASK = None
+
+
 @contextmanager
 def temporary_hparams(new_hparams: dict):
     old_hparams = hparams.copy()
@@ -26,6 +34,52 @@ def temporary_hparams(new_hparams: dict):
     finally:
         hparams.clear()
         hparams.update(old_hparams)
+
+
+def _init_val_with_ds_worker(ctx: dict):
+    global _VAL_WITH_DS_WORKER_CTX, _VAL_WITH_DS_WORKER_RUNNER, _VAL_WITH_DS_WORKER_TASK
+    _VAL_WITH_DS_WORKER_CTX = ctx
+    _VAL_WITH_DS_WORKER_RUNNER = None
+    _VAL_WITH_DS_WORKER_TASK = None
+
+
+def _get_val_with_ds_worker_task():
+    global _VAL_WITH_DS_WORKER_TASK
+    if _VAL_WITH_DS_WORKER_TASK is not None:
+        return _VAL_WITH_DS_WORKER_TASK
+
+    ctx = _VAL_WITH_DS_WORKER_CTX
+    train_hparams = ctx['train_hparams']
+    device = torch.device(ctx['device'])
+    with temporary_hparams(train_hparams):
+        from modules.toplevel import DiffSingerVariance
+        from utils.phoneme_utils import load_phoneme_dictionary
+
+        model = DiffSingerVariance(vocab_size=len(load_phoneme_dictionary()))
+        model.load_state_dict(ctx['model_state_dict'], strict=False)
+        model.to(device)
+        model.eval()
+
+    _VAL_WITH_DS_WORKER_TASK = SimpleNamespace(
+        model=model,
+        device=device,
+        global_rank=0,
+        global_step=ctx['global_step']
+    )
+    return _VAL_WITH_DS_WORKER_TASK
+
+
+def _run_val_with_ds_worker(spec):
+    global _VAL_WITH_DS_WORKER_RUNNER
+    ctx = _VAL_WITH_DS_WORKER_CTX
+    task = _get_val_with_ds_worker_task()
+    if _VAL_WITH_DS_WORKER_RUNNER is None:
+        _VAL_WITH_DS_WORKER_RUNNER = VarianceDsValidationRunner(ctx['cfg'])
+    runner = _VAL_WITH_DS_WORKER_RUNNER
+    with torch.no_grad():
+        if not runner._validated:
+            runner._validate(task)
+        return runner.run_spec(task, *spec)
 
 
 class VarianceDsValidationRunner:
@@ -41,6 +95,10 @@ class VarianceDsValidationRunner:
         self.overwrite_ds_dur = bool(cfg.get('overwrite_ds_dur', False))
         self.overwrite_ds_pitch = bool(cfg.get('overwrite_ds_pitch', False))
         self.overwrite_ds_var = bool(cfg.get('overwrite_ds_var', False))
+        self.num_workers = max(0, int(cfg.get('num_workers', 0) or 0))
+        self.worker_device = cfg.get('worker_device')
+        self.mp_start_method = str(cfg.get('mp_start_method', 'spawn') or 'spawn')
+        self.show_progress = bool(cfg.get('show_progress', True))
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
@@ -500,6 +558,133 @@ class VarianceDsValidationRunner:
                     global_step=task.global_step
                 )
 
+    def _synthesize_acoustic(self, task, spk: str, ds_path: Path, params: List[OrderedDict]):
+        acoustic_infer = self._get_acoustic_infer(task)
+        with temporary_hparams(self.acoustic_hparams):
+            mels = []
+            wavs = []
+            for idx, param in enumerate(params):
+                batch = acoustic_infer.preprocess_input(param, idx=idx)
+                mel = acoustic_infer.forward_model(batch)
+                mels.append(mel[0])
+                if self.acoustic_vocoder:
+                    wav = acoustic_infer.run_vocoder(mel, f0=batch['f0'])
+                    wavs.append(wav[0].detach().cpu())
+            full_mel = torch.cat(mels, dim=1)  # [n_mel, T_total]
+            full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
+            return {
+                'tag': f'val_with_ds/{ds_path.stem}/{spk}',
+                'title': f'{spk} - {ds_path.stem}',
+                'mel': full_mel.detach().cpu(),
+                'wav': full_wav,
+                'sample_rate': self.acoustic_hparams['audio_sample_rate'],
+                'mel_vmin': self.acoustic_hparams.get('mel_vmin'),
+                'mel_vmax': self.acoustic_hparams.get('mel_vmax')
+            }
+
+    def _log_acoustic_result(self, task, result: dict):
+        task.logger.all_rank_experiment.add_figure(
+            f"{result['tag']}/mel",
+            spec_to_figure(
+                result['mel'],
+                result.get('mel_vmin'),
+                result.get('mel_vmax'),
+                result['title']
+            ),
+            global_step=task.global_step
+        )
+        if result.get('wav') is not None:
+            task.logger.all_rank_experiment.add_audio(
+                f"{result['tag']}/audio",
+                result['wav'],
+                sample_rate=result['sample_rate'],
+                global_step=task.global_step
+            )
+
+    def run_spec(self, task, spk: str, ds_path: Path, lang: Optional[str]):
+        params = self._load_ds(ds_path)
+        if self.acoustic_use_spk_id:
+            params = self._force_spk(params, spk)
+        params = self._apply_lang(params, lang)
+        completed_params = params
+        for stage in ('dur', 'pitch', 'variance'):
+            completed_params = self._complete_params_with_stage(task, stage, completed_params)
+        return self._synthesize_acoustic(task, spk, ds_path, completed_params)
+
+    def _iter_progress(self, items, desc, unit, total=None):
+        return tqdm.tqdm(
+            items,
+            desc=desc,
+            unit=unit,
+            total=total,
+            leave=True,
+            dynamic_ncols=True,
+            disable=not self.show_progress
+        )
+
+    @staticmethod
+    def _spec_label(spec) -> str:
+        spk, ds_path, _ = spec
+        return f'{spk}/{ds_path.stem}'
+
+    def _run_serial(self, task, specs):
+        success_count = 0
+        pbar = self._iter_progress(specs, desc='val_with_ds', unit='item')
+        for spec in pbar:
+            pbar.set_postfix_str(self._spec_label(spec))
+            spk, ds_path, lang = spec
+            try:
+                result = self.run_spec(task, spk, ds_path, lang)
+                self._log_acoustic_result(task, result)
+                success_count += 1
+            except Exception as exc:
+                rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
+                rank_zero_warn(traceback.format_exc())
+        return success_count
+
+    def _run_multiprocess(self, task, specs):
+        worker_count = min(self.num_workers, len(specs))
+        ctx = {
+            'cfg': self.cfg,
+            'train_hparams': hparams.copy(),
+            'model_state_dict': {
+                k: v.detach().cpu()
+                for k, v in task.model.state_dict().items()
+            },
+            'global_step': task.global_step,
+            'device': str(self.worker_device or task.device)
+        }
+        mp_context = multiprocessing.get_context(self.mp_start_method)
+        success_count = 0
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=mp_context,
+            initializer=_init_val_with_ds_worker,
+            initargs=(ctx,)
+        ) as executor:
+            future_to_spec = {
+                executor.submit(_run_val_with_ds_worker, spec): spec
+                for spec in specs
+            }
+            pbar = self._iter_progress(
+                as_completed(future_to_spec),
+                desc=f'val_with_ds x{worker_count}',
+                unit='item',
+                total=len(future_to_spec)
+            )
+            for future in pbar:
+                spec = future_to_spec[future]
+                pbar.set_postfix_str(self._spec_label(spec))
+                spk, ds_path, _ = spec
+                try:
+                    result = future.result()
+                    self._log_acoustic_result(task, result)
+                    success_count += 1
+                except Exception as exc:
+                    rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
+                    rank_zero_warn(''.join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        return success_count
+
     @torch.no_grad()
     def run(self, task):
         if getattr(task, 'global_rank', 0) != 0:
@@ -511,23 +696,10 @@ class VarianceDsValidationRunner:
         task.model.eval()
         try:
             specs = list(self._iter_ds_specs())
-            success_count = 0
-            pbar = tqdm.tqdm(specs, desc='val_with_ds', unit='item', leave=False)
-            for spk, ds_path, lang in pbar:
-                pbar.set_postfix_str(f'{spk}/{ds_path.stem}')
-                try:
-                    params = self._load_ds(ds_path)
-                    if self.acoustic_use_spk_id:
-                        params = self._force_spk(params, spk)
-                    params = self._apply_lang(params, lang)
-                    completed_params = params
-                    for stage in ('dur', 'pitch', 'variance'):
-                        completed_params = self._complete_params_with_stage(task, stage, completed_params)
-                    self._log_acoustic(task, spk, ds_path, completed_params)
-                    success_count += 1
-                except Exception as exc:
-                    rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
-                    rank_zero_warn(traceback.format_exc())
+            if self.num_workers > 1 and len(specs) > 1:
+                success_count = self._run_multiprocess(task, specs)
+            else:
+                success_count = self._run_serial(task, specs)
             if specs and success_count == 0:
                 raise RuntimeError('val_with_ds failed for all configured .ds files.')
         finally:
