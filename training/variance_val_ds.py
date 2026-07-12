@@ -1,12 +1,14 @@
 import copy
+import io
 import json
 import traceback
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
+import tqdm
 import yaml
 from lightning.pytorch.utilities.rank_zero import rank_zero_warn
 
@@ -497,16 +499,19 @@ class VarianceDsValidationRunner:
         try:
             specs = list(self._iter_ds_specs())
             success_count = 0
-            for spk, ds_path, lang in specs:
+            pbar = tqdm.tqdm(specs, desc='val_with_ds', unit='item')
+            for spk, ds_path, lang in pbar:
+                pbar.set_postfix_str(f'{spk}/{ds_path.stem}')
                 try:
-                    params = self._load_ds(ds_path)
-                    if self.acoustic_use_spk_id:
-                        params = self._force_spk(params, spk)
-                    params = self._apply_lang(params, lang)
-                    completed_params = params
-                    for stage in ('dur', 'pitch', 'variance'):
-                        completed_params = self._complete_params_with_stage(task, stage, completed_params)
-                    self._log_acoustic(task, spk, ds_path, completed_params)
+                    with redirect_stdout(io.StringIO()):
+                        params = self._load_ds(ds_path)
+                        if self.acoustic_use_spk_id:
+                            params = self._force_spk(params, spk)
+                        params = self._apply_lang(params, lang)
+                        completed_params = params
+                        for stage in ('dur', 'pitch', 'variance'):
+                            completed_params = self._complete_params_with_stage(task, stage, completed_params)
+                        self._log_acoustic(task, spk, ds_path, completed_params)
                     success_count += 1
                 except Exception as exc:
                     rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
