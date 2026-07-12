@@ -139,10 +139,13 @@ val_with_ds:
   acoustic_vocoder: true
   release_acoustic_after_val: false
   release_variance_after_val: false
-  num_workers: 0
-  worker_device: null
   show_progress: true
   verbose: false
+  infer_steps:
+    dur: null
+    pitch: null
+    variance: null
+    acoustic: null
   overwrite_ds_dur: false
   overwrite_ds_pitch: false
   variance_ckpts:
