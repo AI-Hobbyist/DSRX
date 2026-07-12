@@ -467,7 +467,7 @@ class VarianceDsValidationRunner:
             for idx, param in enumerate(params):
                 batch = acoustic_infer.preprocess_input(param, idx=idx)
                 mel = acoustic_infer.forward_model(batch)
-                tag_base = f'val_with_ds/{spk}/{ds_path.stem}_{idx}'
+                tag_base = f'val_with_ds/{ds_path.stem}/{spk}_{idx}'
                 task.logger.all_rank_experiment.add_figure(
                     f'{tag_base}/mel',
                     spec_to_figure(
