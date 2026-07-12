@@ -3,7 +3,7 @@ import json
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
 import yaml
@@ -71,25 +71,45 @@ class VarianceDsValidationRunner:
             path = Path.cwd() / path
         return path
 
+    # (path, lang) — lang is None if not specified
+    DsEntry = Tuple[Path, Optional[str]]
+
+    @staticmethod
+    def _normalize_ds_entry(entry: Union[str, dict]) -> 'VarianceDsValidationRunner.DsEntry':
+        """Normalize a single ds_files entry to (path_str, lang)."""
+        if isinstance(entry, str):
+            return (entry, None)
+        if isinstance(entry, dict):
+            return (entry.get('path'), entry.get('lang'))
+        raise ValueError(
+            f'val_with_ds.ds_files entry must be a string path or '
+            f'{{path: ..., lang: ...}} dict, got {type(entry).__name__}.'
+        )
+
     def _build_spk_to_ds(
         self, ds_files, ds_val_spks
-    ) -> Dict[str, List[Path]]:
+    ) -> Dict[str, List[DsEntry]]:
         """Build speaker → .ds files mapping.
 
         Each speaker in ``ds_val_spks`` gets **all** .ds files from ``ds_files``.
+        Each entry is ``(path, lang)`` where *lang* may be ``None``.
         Speakers are used as-is; existence in the acoustic model's spk_map is
         validated later in ``_validate``.
         """
         if not isinstance(ds_files, list) or len(ds_files) == 0:
-            raise ValueError('val_with_ds.ds_files must be a non-empty list of .ds file paths.')
+            raise ValueError('val_with_ds.ds_files must be a non-empty list.')
         if not isinstance(ds_val_spks, list) or len(ds_val_spks) == 0:
             raise ValueError('val_with_ds.ds_val_spks must be a non-empty list of speaker names.')
 
-        resolved_paths = [self._resolve_path(f) for f in ds_files]
+        # Normalize + resolve all entries
+        entries: List[VarianceDsValidationRunner.DsEntry] = []
+        for raw in ds_files:
+            path_str, lang = self._normalize_ds_entry(raw)
+            entries.append((self._resolve_path(path_str), lang))
 
-        spk_to_ds: Dict[str, List[Path]] = {}
+        spk_to_ds: Dict[str, List[VarianceDsValidationRunner.DsEntry]] = {}
         for spk in ds_val_spks:
-            spk_to_ds[str(spk)] = list(resolved_paths)
+            spk_to_ds[str(spk)] = list(entries)
         return spk_to_ds
 
     def _normalize_variance_ckpts(self, ckpt_cfg) -> dict:
@@ -147,13 +167,14 @@ class VarianceDsValidationRunner:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
-    def _iter_ds_specs(self) -> Iterable[Tuple[str, Path]]:
+    def _iter_ds_specs(self) -> Iterable[Tuple[str, Path, Optional[str]]]:
+        """Yield (speaker, ds_path, lang).  lang is None when not specified."""
         count = 0
-        for spk, ds_files in self.spk_to_ds.items():
-            for ds_path in ds_files:
+        for spk, ds_entries in self.spk_to_ds.items():
+            for ds_path, lang in ds_entries:
                 if self.max_samples_per_val is not None and count >= int(self.max_samples_per_val):
                     return
-                yield spk, ds_path
+                yield spk, ds_path, lang
                 count += 1
 
     def _validate(self, task):
@@ -195,7 +216,7 @@ class VarianceDsValidationRunner:
                             f"Speaker '{spk}' (from ds_val_spks) is not in {stage} variance spk_map.json."
                         )
 
-        for spk, ds_path in self._iter_ds_specs():
+        for spk, ds_path, _ in self._iter_ds_specs():
             if ds_path is None or not ds_path.exists():
                 raise FileNotFoundError(f"val_with_ds.ds_files contains missing .ds file: {ds_path}")
             params = self._load_ds(ds_path)
@@ -227,6 +248,15 @@ class VarianceDsValidationRunner:
             param_copy['ph_spk_mix'] = spk_mix
             forced.append(param_copy)
         return forced
+
+    @staticmethod
+    def _apply_lang(params: List[OrderedDict], lang: Optional[str]) -> List[OrderedDict]:
+        """Override lang field in all params if specified."""
+        if lang is None:
+            return params
+        for param in params:
+            param['lang'] = lang
+        return params
 
     @staticmethod
     def _stage_predictions(stage: str) -> set:
@@ -447,9 +477,11 @@ class VarianceDsValidationRunner:
         try:
             specs = list(self._iter_ds_specs())
             success_count = 0
-            for spk, ds_path in specs:
+            for spk, ds_path, lang in specs:
                 try:
-                    params = self._force_spk(self._load_ds(ds_path), spk)
+                    params = self._apply_lang(
+                        self._force_spk(self._load_ds(ds_path), spk), lang
+                    )
                     completed_params = params
                     for stage in ('dur', 'pitch', 'variance'):
                         completed_params = self._complete_params_with_stage(task, stage, completed_params)

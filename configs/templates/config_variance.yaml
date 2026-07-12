@@ -158,6 +158,8 @@ val_check_interval: 2000
 #   acoustic_ckpt_dir: ckpt/acoustic_xxx
 #   ds_files:
 #     - samples/valid/song1.ds
+#     - path: samples/valid/song2.ds    # dict 形式可指定 lang
+#       lang: jpn
 #   ds_val_spks:
 #     - speaker1
 #
@@ -177,6 +179,8 @@ val_check_interval: 2000
 #       ckpt_dir: ckpt/variance_xxx
 #   ds_files:
 #     - samples/valid/song1.ds
+#     - path: samples/valid/song2.ds
+#       lang: jpn
 #   ds_val_spks:
 #     - speaker1
 #
@@ -218,6 +222,9 @@ val_with_ds:
       ckpt_steps: null
   max_samples_per_val: null
   seed: -1
+  # Each ds_files entry can be:
+  #   - a plain path string
+  #   - {path: ..., lang: ...}  dict, where lang overrides the .ds file's language
   ds_files: []
   ds_val_spks: []
 num_ckpt_keep: 5
