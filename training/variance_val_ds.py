@@ -1,5 +1,6 @@
 import copy
 import json
+import traceback
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
@@ -47,6 +48,7 @@ class VarianceDsValidationRunner:
             ds_val_spks=cfg.get('ds_val_spks')
         )
         self.acoustic_hparams = None
+        self.acoustic_use_spk_id = False
         self.acoustic_infer = None
         self.variance_infers = {}
         self._validated = False
@@ -196,8 +198,9 @@ class VarianceDsValidationRunner:
 
     def _validate(self, task):
         self.acoustic_hparams = self._load_acoustic_hparams()
+        self.acoustic_use_spk_id = bool(self.acoustic_hparams.get('use_spk_id', False))
         acoustic_spk_map_path = self.acoustic_ckpt_dir / 'spk_map.json'
-        if self.acoustic_hparams.get('use_spk_id', False):
+        if self.acoustic_use_spk_id:
             if not acoustic_spk_map_path.exists():
                 raise FileNotFoundError(f'Acoustic spk_map.json not found in {self.acoustic_ckpt_dir}')
             acoustic_spk_map = self._load_json(acoustic_spk_map_path)
@@ -496,9 +499,10 @@ class VarianceDsValidationRunner:
             success_count = 0
             for spk, ds_path, lang in specs:
                 try:
-                    params = self._apply_lang(
-                        self._force_spk(self._load_ds(ds_path), spk), lang
-                    )
+                    params = self._load_ds(ds_path)
+                    if self.acoustic_use_spk_id:
+                        params = self._force_spk(params, spk)
+                    params = self._apply_lang(params, lang)
                     completed_params = params
                     for stage in ('dur', 'pitch', 'variance'):
                         completed_params = self._complete_params_with_stage(task, stage, completed_params)
@@ -506,6 +510,7 @@ class VarianceDsValidationRunner:
                     success_count += 1
                 except Exception as exc:
                     rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
+                    rank_zero_warn(traceback.format_exc())
             if specs and success_count == 0:
                 raise RuntimeError('val_with_ds failed for all configured .ds files.')
         finally:
