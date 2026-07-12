@@ -1,18 +1,16 @@
 import copy
-import io
 import json
 import threading
 import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
-import tqdm
 import yaml
-from lightning.pytorch.utilities.rank_zero import rank_zero_warn
+from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_warn
 
 from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
 from utils.hparams import hparams
@@ -473,28 +471,36 @@ class VarianceDsValidationRunner:
     def _log_acoustic(self, task, spk: str, ds_path: Path, params: List[OrderedDict]):
         acoustic_infer = self._get_acoustic_infer(task)
         with temporary_hparams(self.acoustic_hparams):
+            mels = []
+            wavs = []
             for idx, param in enumerate(params):
                 batch = acoustic_infer.preprocess_input(param, idx=idx)
                 mel = acoustic_infer.forward_model(batch)
-                tag_base = f'val_with_ds/{ds_path.stem}/{spk}_{idx}'
-                task.logger.all_rank_experiment.add_figure(
-                    f'{tag_base}/mel',
-                    spec_to_figure(
-                        mel[0],
-                        self.acoustic_hparams.get('mel_vmin'),
-                        self.acoustic_hparams.get('mel_vmax'),
-                        f'{spk} - {ds_path.stem} #{idx}'
-                    ),
-                    global_step=task.global_step
-                )
+                mels.append(mel[0])
                 if self.acoustic_vocoder:
                     wav = acoustic_infer.run_vocoder(mel, f0=batch['f0'])
-                    task.logger.all_rank_experiment.add_audio(
-                        f'{tag_base}/audio',
-                        wav[0].detach().cpu(),
-                        sample_rate=self.acoustic_hparams['audio_sample_rate'],
-                        global_step=task.global_step
-                    )
+                    wavs.append(wav[0].detach().cpu())
+            # Concatenate segments → full-song mel
+            full_mel = torch.cat(mels, dim=1)  # [n_mel, T_total]
+            tag = f'val_with_ds/{ds_path.stem}/{spk}'
+            task.logger.all_rank_experiment.add_figure(
+                f'{tag}/mel',
+                spec_to_figure(
+                    full_mel,
+                    self.acoustic_hparams.get('mel_vmin'),
+                    self.acoustic_hparams.get('mel_vmax'),
+                    f'{spk} - {ds_path.stem}'
+                ),
+                global_step=task.global_step
+            )
+            if self.acoustic_vocoder and wavs:
+                full_wav = torch.cat(wavs, dim=-1)
+                task.logger.all_rank_experiment.add_audio(
+                    f'{tag}/audio',
+                    full_wav,
+                    sample_rate=self.acoustic_hparams['audio_sample_rate'],
+                    global_step=task.global_step
+                )
 
     @torch.no_grad()
     def run(self, task):
@@ -508,25 +514,23 @@ class VarianceDsValidationRunner:
         model_lock = threading.Lock()
         try:
             specs = list(self._iter_ds_specs())
+            total = len(specs)
             success_count = 0
+            rank_zero_info(f'val_with_ds starting ({total} items, {self.num_val_workers} workers)')
             with ThreadPoolExecutor(max_workers=self.num_val_workers) as pool:
                 futures = {
                     pool.submit(self._process_one, task, spk, ds_path, lang, model_lock): (spk, ds_path)
                     for spk, ds_path, lang in specs
                 }
-                pbar = tqdm.tqdm(
-                    as_completed(futures), total=len(futures),
-                    desc='val_with_ds', unit='item'
-                )
-                for fut in pbar:
+                for fut in as_completed(futures):
                     spk, ds_path = futures[fut]
-                    pbar.set_postfix_str(f'{spk}/{ds_path.stem}')
                     try:
                         fut.result()
                         success_count += 1
                     except Exception as exc:
-                        rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
+                        rank_zero_warn(f'val_with_ds FAIL {spk}:{ds_path}: {exc}')
                         rank_zero_warn(traceback.format_exc())
+            rank_zero_info(f'val_with_ds done ({success_count}/{total} ok)')
             if specs and success_count == 0:
                 raise RuntimeError('val_with_ds failed for all configured .ds files.')
         finally:
@@ -538,13 +542,12 @@ class VarianceDsValidationRunner:
                 task.model.train()
 
     def _process_one(self, task, spk: str, ds_path: Path, lang: Optional[str], model_lock: threading.Lock):
-        with redirect_stdout(io.StringIO()):
-            params = self._load_ds(ds_path)
-            if self.acoustic_use_spk_id:
-                params = self._force_spk(params, spk)
-            params = self._apply_lang(params, lang)
-            completed_params = params
-            with model_lock:
-                for stage in ('dur', 'pitch', 'variance'):
-                    completed_params = self._complete_params_with_stage(task, stage, completed_params)
-                self._log_acoustic(task, spk, ds_path, completed_params)
+        params = self._load_ds(ds_path)
+        if self.acoustic_use_spk_id:
+            params = self._force_spk(params, spk)
+        params = self._apply_lang(params, lang)
+        completed_params = params
+        with model_lock:
+            for stage in ('dur', 'pitch', 'variance'):
+                completed_params = self._complete_params_with_stage(task, stage, completed_params)
+            self._log_acoustic(task, spk, ds_path, completed_params)
