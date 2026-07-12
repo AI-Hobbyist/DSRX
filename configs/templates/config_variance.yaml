@@ -208,8 +208,10 @@ val_with_ds:
   acoustic_vocoder: true
   release_acoustic_after_val: false
   release_variance_after_val: false
+  # overwrite_*: force re-prediction even if .ds already has the value
   overwrite_ds_dur: false
   overwrite_ds_pitch: false
+  overwrite_ds_var: false
   variance_ckpts:
     dur:
       ckpt_dir: null

@@ -38,6 +38,7 @@ class VarianceDsValidationRunner:
         self.release_variance_after_val = bool(cfg.get('release_variance_after_val', False))
         self.overwrite_ds_dur = bool(cfg.get('overwrite_ds_dur', False))
         self.overwrite_ds_pitch = bool(cfg.get('overwrite_ds_pitch', False))
+        self.overwrite_ds_var = bool(cfg.get('overwrite_ds_var', False))
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
@@ -391,7 +392,7 @@ class VarianceDsValidationRunner:
             for v_name, v_tensor in variance_pred.items():
                 if v_name not in VARIANCE_CHECKLIST:
                     continue
-                if infer_ins.auto_completion_mode and param.get(v_name) is not None:
+                if infer_ins.auto_completion_mode and param.get(v_name) is not None and not self.overwrite_ds_var:
                     continue
                 if not infer_ins.auto_completion_mode and v_name not in infer_ins.variance_prediction_set:
                     continue
