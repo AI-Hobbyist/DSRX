@@ -1,8 +1,10 @@
 import copy
 import io
 import json
+import threading
 import traceback
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
@@ -45,6 +47,7 @@ class VarianceDsValidationRunner:
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
+        self.num_val_workers = max(1, int(cfg.get('num_val_workers', 4)))
         self.spk_to_ds = self._build_spk_to_ds(
             ds_files=cfg.get('ds_files'),
             ds_val_spks=cfg.get('ds_val_spks')
@@ -502,26 +505,28 @@ class VarianceDsValidationRunner:
 
         was_training = task.model.training
         task.model.eval()
+        model_lock = threading.Lock()
         try:
             specs = list(self._iter_ds_specs())
             success_count = 0
-            pbar = tqdm.tqdm(specs, desc='val_with_ds', unit='item')
-            for spk, ds_path, lang in pbar:
-                pbar.set_postfix_str(f'{spk}/{ds_path.stem}')
-                try:
-                    with redirect_stdout(io.StringIO()):
-                        params = self._load_ds(ds_path)
-                        if self.acoustic_use_spk_id:
-                            params = self._force_spk(params, spk)
-                        params = self._apply_lang(params, lang)
-                        completed_params = params
-                        for stage in ('dur', 'pitch', 'variance'):
-                            completed_params = self._complete_params_with_stage(task, stage, completed_params)
-                        self._log_acoustic(task, spk, ds_path, completed_params)
-                    success_count += 1
-                except Exception as exc:
-                    rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
-                    rank_zero_warn(traceback.format_exc())
+            with ThreadPoolExecutor(max_workers=self.num_val_workers) as pool:
+                futures = {
+                    pool.submit(self._process_one, task, spk, ds_path, lang, model_lock): (spk, ds_path)
+                    for spk, ds_path, lang in specs
+                }
+                pbar = tqdm.tqdm(
+                    as_completed(futures), total=len(futures),
+                    desc='val_with_ds', unit='item'
+                )
+                for fut in pbar:
+                    spk, ds_path = futures[fut]
+                    pbar.set_postfix_str(f'{spk}/{ds_path.stem}')
+                    try:
+                        fut.result()
+                        success_count += 1
+                    except Exception as exc:
+                        rank_zero_warn(f'val_with_ds failed for {spk}:{ds_path}: {exc}')
+                        rank_zero_warn(traceback.format_exc())
             if specs and success_count == 0:
                 raise RuntimeError('val_with_ds failed for all configured .ds files.')
         finally:
@@ -531,3 +536,15 @@ class VarianceDsValidationRunner:
                 self._release_acoustic_infer()
             if was_training:
                 task.model.train()
+
+    def _process_one(self, task, spk: str, ds_path: Path, lang: Optional[str], model_lock: threading.Lock):
+        with redirect_stdout(io.StringIO()):
+            params = self._load_ds(ds_path)
+            if self.acoustic_use_spk_id:
+                params = self._force_spk(params, spk)
+            params = self._apply_lang(params, lang)
+            completed_params = params
+            with model_lock:
+                for stage in ('dur', 'pitch', 'variance'):
+                    completed_params = self._complete_params_with_stage(task, stage, completed_params)
+                self._log_acoustic(task, spk, ds_path, completed_params)
