@@ -213,6 +213,8 @@ val_with_ds:
   overwrite_ds_dur: false
   overwrite_ds_pitch: false
   overwrite_ds_var: false
+  # val_batch_size: segments per forward pass for faster GPU inference (default 4)
+  val_batch_size: 4
   variance_ckpts:
     dur:
       ckpt_dir: null

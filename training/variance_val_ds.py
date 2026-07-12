@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 import tqdm
 import yaml
 from lightning.pytorch.utilities.rank_zero import rank_zero_warn
@@ -42,6 +43,7 @@ class VarianceDsValidationRunner:
         self.overwrite_ds_dur = bool(cfg.get('overwrite_ds_dur', False))
         self.overwrite_ds_pitch = bool(cfg.get('overwrite_ds_pitch', False))
         self.overwrite_ds_var = bool(cfg.get('overwrite_ds_var', False))
+        self.val_batch_size = int(cfg.get('val_batch_size', 4))
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
@@ -337,9 +339,41 @@ class VarianceDsValidationRunner:
             elif self._current_model_predicts(task, stage):
                 yield stage, (self._get_current_variance_infer(task, stage), None)
 
+    @staticmethod
+    def _collate_batches(batch_list: List[dict]) -> dict:
+        """Collate per-segment batch dicts into one batched dict for bulk forward."""
+        if len(batch_list) == 0:
+            return {}
+        if len(batch_list) == 1:
+            return batch_list[0]
+
+        keys = batch_list[0].keys()
+        collated = {}
+        for key in keys:
+            tensors = [b[key] for b in batch_list]
+            if all(t is None for t in tensors):
+                collated[key] = None
+            elif all(isinstance(t, torch.Tensor) for t in tensors):
+                ndim = tensors[0].dim()
+                sizes = [t.shape[1] for t in tensors]
+                max_sz = max(sizes)
+                padded = []
+                for t in tensors:
+                    if t.shape[1] < max_sz:
+                        pad_len = max_sz - t.shape[1]
+                        pad_cfg = [0] * (2 * (ndim - 1))
+                        pad_cfg[-1] = pad_len
+                        t = F.pad(t, pad_cfg)
+                    padded.append(t)
+                collated[key] = torch.cat(padded, dim=0)
+            else:
+                collated[key] = tensors
+        return collated
+
     def _complete_params(self, infer_ins, params: List[OrderedDict]) -> List[OrderedDict]:
         import librosa
 
+        # --- Phase 1: preprocess each segment individually (CPU-bound) ---
         batches = []
         predictor_flags = []
         for i, param in enumerate(params):
@@ -364,9 +398,6 @@ class VarianceDsValidationRunner:
                 flag = (False, flag[1], flag[2])
             if param.get('f0_seq') is not None and not self.overwrite_ds_pitch:
                 flag = (flag[0], False, flag[2])
-            # When dur is not predicted but needed for mel2ph alignment,
-            # force dur prediction to avoid relying on .ds ph_dur which
-            # may be incompatible (e.g. rounds to zero frames).
             need_dur_for_align = not flag[0] and (flag[1] or flag[2])
             if need_dur_for_align and infer_ins.model.fs2.predict_dur:
                 flag = (True, flag[1], flag[2])
@@ -377,57 +408,78 @@ class VarianceDsValidationRunner:
                 load_pitch=not flag[1] and flag[2]
             ))
 
-        results = []
-        for param, flag, batch in zip(params, predictor_flags, batches):
-            if 'seed' in param:
-                torch.manual_seed(param['seed'] & 0xffff_ffff)
-                torch.cuda.manual_seed_all(param['seed'] & 0xffff_ffff)
-            elif self.seed >= 0:
-                torch.manual_seed(self.seed & 0xffff_ffff)
-                torch.cuda.manual_seed_all(self.seed & 0xffff_ffff)
+        # --- Phase 2: group by (flag, batch_size) for bulk GPU inference ---
+        # Build index list grouped by identical flags
+        flag_groups: Dict[Tuple[bool, bool, bool], List[int]] = {}
+        for i, flag in enumerate(predictor_flags):
+            flag_groups.setdefault(flag, []).append(i)
 
-            param_copy = copy.deepcopy(param)
-            flag_saved = (
-                infer_ins.model.fs2.predict_dur,
-                infer_ins.model.predict_pitch,
-                infer_ins.model.predict_variances
-            )
-            (
-                infer_ins.model.fs2.predict_dur,
-                infer_ins.model.predict_pitch,
-                infer_ins.model.predict_variances
-            ) = flag
-            try:
-                dur_pred, pitch_pred, variance_pred = infer_ins.forward_model(batch)
-            finally:
+        results: List[Optional[OrderedDict]] = [None] * len(params)
+        flag_saved = (
+            infer_ins.model.fs2.predict_dur,
+            infer_ins.model.predict_pitch,
+            infer_ins.model.predict_variances
+        )
+
+        for flag, indices in flag_groups.items():
+            # Process in mini-batches of val_batch_size
+            for chunk_start in range(0, len(indices), self.val_batch_size):
+                chunk_indices = indices[chunk_start:chunk_start + self.val_batch_size]
+                chunk_batches = [batches[i] for i in chunk_indices]
+
+                # Collate and forward
+                collated = self._collate_batches(chunk_batches)
                 (
                     infer_ins.model.fs2.predict_dur,
                     infer_ins.model.predict_pitch,
                     infer_ins.model.predict_variances
-                ) = flag_saved
+                ) = flag
+                try:
+                    dur_pred, pitch_pred, variance_pred = infer_ins.forward_model(collated)
+                finally:
+                    (
+                        infer_ins.model.fs2.predict_dur,
+                        infer_ins.model.predict_pitch,
+                        infer_ins.model.predict_variances
+                    ) = flag_saved
 
-            if dur_pred is not None:
-                dur_pred = dur_pred[0].cpu().numpy()
-                param_copy['ph_dur'] = ' '.join(str(round(dur, 6)) for dur in (dur_pred * infer_ins.timestep).tolist())
-            if pitch_pred is not None:
-                pitch_pred = pitch_pred[0].cpu().numpy()
-                f0_pred = librosa.midi_to_hz(pitch_pred)
-                param_copy['f0_seq'] = ' '.join(str(round(freq, 1)) for freq in f0_pred.tolist())
-                param_copy['f0_timestep'] = str(infer_ins.timestep)
-            if variance_pred is None:
-                variance_pred = {}
-            for v_name, v_tensor in variance_pred.items():
-                if v_name not in VARIANCE_CHECKLIST:
-                    continue
-                if infer_ins.auto_completion_mode and param.get(v_name) is not None and not self.overwrite_ds_var:
-                    continue
-                if not infer_ins.auto_completion_mode and v_name not in infer_ins.variance_prediction_set:
-                    continue
-                v_pred = v_tensor[0].cpu().numpy()
-                param_copy[v_name] = ' '.join(str(round(v, 4)) for v in v_pred.tolist())
-                param_copy[f'{v_name}_timestep'] = str(infer_ins.timestep)
-            results.append(param_copy)
-        return results
+                # --- Phase 3: unbatch results and fill param copies ---
+                for batch_idx, orig_idx in enumerate(chunk_indices):
+                    param = params[orig_idx]
+                    if 'seed' in param:
+                        torch.manual_seed(param['seed'] & 0xffff_ffff)
+                        torch.cuda.manual_seed_all(param['seed'] & 0xffff_ffff)
+                    elif self.seed >= 0:
+                        torch.manual_seed(self.seed & 0xffff_ffff)
+                        torch.cuda.manual_seed_all(self.seed & 0xffff_ffff)
+
+                    param_copy = copy.deepcopy(param)
+                    if dur_pred is not None:
+                        d = dur_pred[batch_idx].cpu().numpy()
+                        param_copy['ph_dur'] = ' '.join(
+                            str(round(v, 6)) for v in (d * infer_ins.timestep).tolist()
+                        )
+                    if pitch_pred is not None:
+                        p = pitch_pred[batch_idx].cpu().numpy()
+                        f0 = librosa.midi_to_hz(p)
+                        param_copy['f0_seq'] = ' '.join(str(round(v, 1)) for v in f0.tolist())
+                        param_copy['f0_timestep'] = str(infer_ins.timestep)
+                    if not isinstance(variance_pred, dict):
+                        variance_pred = {}
+                    if variance_pred:
+                        for v_name, v_tensor in variance_pred.items():
+                            if v_name not in VARIANCE_CHECKLIST:
+                                continue
+                            if infer_ins.auto_completion_mode and param.get(v_name) is not None and not self.overwrite_ds_var:
+                                continue
+                            if not infer_ins.auto_completion_mode and v_name not in infer_ins.variance_prediction_set:
+                                continue
+                            v = v_tensor[batch_idx].cpu().numpy()
+                            param_copy[v_name] = ' '.join(str(round(x, 4)) for x in v.tolist())
+                            param_copy[f'{v_name}_timestep'] = str(infer_ins.timestep)
+                    results[orig_idx] = param_copy
+
+        return results  # type: ignore[return-value]
 
     def _complete_params_with_stage(self, task, stage: str, params: List[OrderedDict]) -> List[OrderedDict]:
         for infer_stage, (infer_ins, stage_hparams) in self._iter_stage_infers(task):
