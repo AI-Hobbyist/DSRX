@@ -594,9 +594,9 @@ class VarianceDsValidationRunner:
                     wavs.append(wav[0].detach().cpu())
             # Concatenate segments → full-song mel
             full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
-            tag = f'{self._speaker_tag(spk)}/{self._sanitize_tag_part(ds_path.stem)}'
+            tag = self._speaker_tag(spk)
             task.logger.all_rank_experiment.add_figure(
-                f'{tag}/mel',
+                tag,
                 spec_to_figure(
                     full_mel,
                     self.acoustic_hparams.get('mel_vmin'),
@@ -608,7 +608,7 @@ class VarianceDsValidationRunner:
             if self.acoustic_vocoder and wavs:
                 full_wav = torch.cat(wavs, dim=-1)
                 task.logger.all_rank_experiment.add_audio(
-                    f'{tag}/audio',
+                    tag,
                     full_wav,
                     sample_rate=self.acoustic_hparams['audio_sample_rate'],
                     global_step=task.global_step
@@ -629,7 +629,7 @@ class VarianceDsValidationRunner:
             full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
             full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
             return {
-                'tag': f'{self._speaker_tag(spk)}/{ds_label}',
+                'tag': self._speaker_tag(spk),
                 'title': self._figure_title(spk, ds_path),
                 'mel': full_mel.detach().cpu(),
                 'wav': full_wav,
@@ -640,7 +640,7 @@ class VarianceDsValidationRunner:
 
     def _log_acoustic_result(self, task, result: dict):
         task.logger.all_rank_experiment.add_figure(
-            f"{result['tag']}/mel",
+            result['tag'],
             spec_to_figure(
                 result['mel'],
                 result.get('mel_vmin'),
@@ -651,7 +651,7 @@ class VarianceDsValidationRunner:
         )
         if result.get('wav') is not None:
             task.logger.all_rank_experiment.add_audio(
-                f"{result['tag']}/audio",
+                result['tag'],
                 result['wav'],
                 sample_rate=result['sample_rate'],
                 global_step=task.global_step
