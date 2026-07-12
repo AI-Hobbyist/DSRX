@@ -74,10 +74,6 @@ class VarianceDsValidationRunner:
         self.acoustic_use_spk_id = False
         self.acoustic_infer = None
         self.variance_infers = {}
-        self.spk_index_map = {
-            spk: idx
-            for idx, spk in enumerate(self.spk_to_ds)
-        }
         self._validated = False
 
         if self.acoustic_ckpt_dir is None:
@@ -287,12 +283,9 @@ class VarianceDsValidationRunner:
             path_to_label[str(ds_path.resolve())] = label
 
         return [
-            (path_to_label[str(ds_path.resolve())], spk, ds_path, lang)
-            for spk, ds_path, lang in specs
+            (f'var_infer_{idx}', path_to_label[str(ds_path.resolve())], spk, ds_path, lang)
+            for idx, (spk, ds_path, lang) in enumerate(specs)
         ]
-
-    def _speaker_tag(self, spk: str) -> str:
-        return f'var_infer_{self.spk_index_map[spk]}'
 
     @staticmethod
     def _figure_title(spk: str, ds_path: Path) -> str:
@@ -580,41 +573,9 @@ class VarianceDsValidationRunner:
                 return mel.transpose(0, 1)
         return mel if mel.shape[0] >= mel.shape[1] else mel.transpose(0, 1)
 
-    def _log_acoustic(self, task, spk: str, ds_path: Path, params: List[OrderedDict]):
-        acoustic_infer = self._get_acoustic_infer(task)
-        with temporary_hparams(self._apply_infer_steps(self.acoustic_hparams, 'acoustic')):
-            mels = []
-            wavs = []
-            for idx, param in enumerate(params):
-                batch = acoustic_infer.preprocess_input(param, idx=idx)
-                mel = acoustic_infer.forward_model(batch)
-                mels.append(self._mel_to_time_major(mel[0]))
-                if self.acoustic_vocoder:
-                    wav = acoustic_infer.run_vocoder(mel, f0=batch['f0'])
-                    wavs.append(wav[0].detach().cpu())
-            # Concatenate segments → full-song mel
-            full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
-            tag = f'{self._speaker_tag(spk)}/{self._sanitize_tag_part(ds_path.stem)}'
-            task.logger.all_rank_experiment.add_figure(
-                tag,
-                spec_to_figure(
-                    full_mel,
-                    self.acoustic_hparams.get('mel_vmin'),
-                    self.acoustic_hparams.get('mel_vmax'),
-                    self._figure_title(spk, ds_path)
-                ),
-                global_step=task.global_step
-            )
-            if self.acoustic_vocoder and wavs:
-                full_wav = torch.cat(wavs, dim=-1)
-                task.logger.all_rank_experiment.add_audio(
-                    tag,
-                    full_wav,
-                    sample_rate=self.acoustic_hparams['audio_sample_rate'],
-                    global_step=task.global_step
-                )
-
-    def _synthesize_acoustic(self, task, ds_label: str, spk: str, ds_path: Path, params: List[OrderedDict]):
+    def _synthesize_acoustic(
+        self, task, tag: str, ds_label: str, spk: str, ds_path: Path, params: List[OrderedDict]
+    ):
         acoustic_infer = self._get_acoustic_infer(task)
         with temporary_hparams(self._apply_infer_steps(self.acoustic_hparams, 'acoustic')):
             mels = []
@@ -628,10 +589,8 @@ class VarianceDsValidationRunner:
                     wavs.append(wav[0].detach().cpu())
             full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
             full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
-            tag = self._speaker_tag(spk)
             return {
                 'tag': tag,
-                'event_tag': f'{tag}/{ds_label}',
                 'title': self._figure_title(spk, ds_path),
                 'mel': full_mel.detach().cpu(),
                 'wav': full_wav,
@@ -639,34 +598,6 @@ class VarianceDsValidationRunner:
                 'mel_vmin': self.acoustic_hparams.get('mel_vmin'),
                 'mel_vmax': self.acoustic_hparams.get('mel_vmax')
             }
-
-    @staticmethod
-    def _try_add_figure_with_display_name(experiment, event_tag: str, display_name: str, figure, global_step: int):
-        try:
-            import matplotlib.pyplot as plt
-            from torch.utils.tensorboard.summary import figure_to_image, image
-
-            summary = image(event_tag, figure_to_image(figure, close=False), dataformats='CHW')
-            summary.value[0].metadata.display_name = display_name
-            experiment._get_file_writer().add_summary(summary, global_step)
-            plt.close(figure)
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def _try_add_audio_with_display_name(
-        experiment, event_tag: str, display_name: str, wav: torch.Tensor, sample_rate: int, global_step: int
-    ):
-        try:
-            from torch.utils.tensorboard.summary import audio
-
-            summary = audio(event_tag, wav, sample_rate=sample_rate)
-            summary.value[0].metadata.display_name = display_name
-            experiment._get_file_writer().add_summary(summary, global_step)
-            return True
-        except Exception:
-            return False
 
     def _log_acoustic_result(self, task, result: dict):
         experiment = task.logger.all_rank_experiment
@@ -676,27 +607,16 @@ class VarianceDsValidationRunner:
             result.get('mel_vmax'),
             result['title']
         )
-        if not self._try_add_figure_with_display_name(
-            experiment, result['event_tag'], result['tag'], figure, task.global_step
-        ):
-            experiment.add_figure(result['event_tag'], figure, global_step=task.global_step)
+        experiment.add_figure(result['tag'], figure, global_step=task.global_step)
         if result.get('wav') is not None:
-            if not self._try_add_audio_with_display_name(
-                experiment,
-                result['event_tag'],
+            experiment.add_audio(
                 result['tag'],
                 result['wav'],
-                result['sample_rate'],
-                task.global_step
-            ):
-                experiment.add_audio(
-                    result['event_tag'],
-                    result['wav'],
-                    sample_rate=result['sample_rate'],
-                    global_step=task.global_step
-                )
+                sample_rate=result['sample_rate'],
+                global_step=task.global_step
+            )
 
-    def run_spec(self, task, ds_label: str, spk: str, ds_path: Path, lang: Optional[str]):
+    def run_spec(self, task, tag: str, ds_label: str, spk: str, ds_path: Path, lang: Optional[str]):
         with silence_output(enabled=not self.verbose):
             params = self._load_ds(ds_path)
             if self.acoustic_use_spk_id:
@@ -705,7 +625,7 @@ class VarianceDsValidationRunner:
             completed_params = params
             for stage in ('dur', 'pitch', 'variance'):
                 completed_params = self._complete_params_with_stage(task, stage, completed_params)
-            return self._synthesize_acoustic(task, ds_label, spk, ds_path, completed_params)
+            return self._synthesize_acoustic(task, tag, ds_label, spk, ds_path, completed_params)
 
     def _iter_progress(self, items, desc, unit, total=None):
         return tqdm.tqdm(
@@ -720,17 +640,17 @@ class VarianceDsValidationRunner:
 
     @staticmethod
     def _spec_label(spec) -> str:
-        ds_label, spk, _, _ = spec
-        return f'{ds_label}/{spk}'
+        tag, ds_label, spk, _, _ = spec
+        return f'{tag}/{spk}/{ds_label}'
 
     def _run_serial(self, task, specs):
         success_count = 0
         pbar = self._iter_progress(specs, desc='val_with_ds', unit='item')
         for spec in pbar:
             pbar.set_postfix_str(self._spec_label(spec))
-            ds_label, spk, ds_path, lang = spec
+            tag, ds_label, spk, ds_path, lang = spec
             try:
-                result = self.run_spec(task, ds_label, spk, ds_path, lang)
+                result = self.run_spec(task, tag, ds_label, spk, ds_path, lang)
                 self._log_acoustic_result(task, result)
                 success_count += 1
             except Exception as exc:
