@@ -146,6 +146,58 @@ val_check_interval: 2000
 # Optional .ds validation synthesis during variance training.
 # ds_val_spks specifies which speakers to validate; each gets all ds_files.
 # Speakers must exist in the acoustic model's spk_map.
+#
+# ============================================================
+# Template A: All-in-one 模型 (dur + pitch + variance 都在当前模型)
+#   predict_dur: true
+#   predict_pitch: true
+#   predict_energy: true      # 或其他 variance 参数
+#   variance_ckpts 留空即可，所有 stage 由当前模型处理
+# ============================================================
+# val_with_ds:
+#   acoustic_ckpt_dir: ckpt/acoustic_xxx
+#   ds_files:
+#     - samples/valid/song1.ds
+#   ds_val_spks:
+#     - speaker1
+#
+# ============================================================
+# Template B: 分模型 (如只训 pitch，dur/variance 靠外部 ckpt)
+#   predict_dur: false
+#   predict_pitch: true
+#   predict_energy: false     # 全关
+#   variance_ckpts 必须指定 dur 和 variance 的外部 ckpt
+# ============================================================
+# val_with_ds:
+#   acoustic_ckpt_dir: ckpt/acoustic_xxx
+#   variance_ckpts:
+#     dur:
+#       ckpt_dir: ckpt/dur_xxx
+#     variance:
+#       ckpt_dir: ckpt/variance_xxx
+#   ds_files:
+#     - samples/valid/song1.ds
+#   ds_val_spks:
+#     - speaker1
+#
+# ============================================================
+# Template C: 只训 variance 参数 (dur/pitch 靠外部 ckpt)
+#   predict_dur: false
+#   predict_pitch: false
+#   predict_energy: true
+#   variance_ckpts 必须指定 dur 和 pitch 的外部 ckpt
+# ============================================================
+# val_with_ds:
+#   acoustic_ckpt_dir: ckpt/acoustic_xxx
+#   variance_ckpts:
+#     dur:
+#       ckpt_dir: ckpt/dur_xxx
+#     pitch:
+#       ckpt_dir: ckpt/pitch_xxx
+#   ds_files:
+#     - samples/valid/song1.ds
+#   ds_val_spks:
+#     - speaker1
 val_with_ds:
   acoustic_ckpt_dir: null
   acoustic_ckpt_steps: null
@@ -166,17 +218,8 @@ val_with_ds:
       ckpt_steps: null
   max_samples_per_val: null
   seed: -1
-  # ds_files: .ds files shared across all ds_val_spks.
-  # ds_val_spks: speakers to validate (must be in acoustic model's spk_map).
   ds_files: []
   ds_val_spks: []
-  # Example:
-  # ds_files:
-  #   - samples/valid/song1.ds
-  #   - samples/valid/song2.ds
-  # ds_val_spks:
-  #   - speaker1
-  #   - speaker2
 num_ckpt_keep: 5
 permanent_ckpt_start: 60000
 permanent_ckpt_interval: 10000
