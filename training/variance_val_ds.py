@@ -524,6 +524,17 @@ class VarianceDsValidationRunner:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _mel_to_time_major(self, mel: torch.Tensor) -> torch.Tensor:
+        if mel.dim() != 2:
+            return mel
+        mel_bins = int(self.acoustic_hparams.get('audio_num_mel_bins') or 0)
+        if mel_bins > 0:
+            if mel.shape[-1] == mel_bins:
+                return mel
+            if mel.shape[0] == mel_bins:
+                return mel.transpose(0, 1)
+        return mel if mel.shape[0] >= mel.shape[1] else mel.transpose(0, 1)
+
     def _log_acoustic(self, task, spk: str, ds_path: Path, params: List[OrderedDict]):
         acoustic_infer = self._get_acoustic_infer(task)
         with temporary_hparams(self.acoustic_hparams):
@@ -532,12 +543,12 @@ class VarianceDsValidationRunner:
             for idx, param in enumerate(params):
                 batch = acoustic_infer.preprocess_input(param, idx=idx)
                 mel = acoustic_infer.forward_model(batch)
-                mels.append(mel[0])
+                mels.append(self._mel_to_time_major(mel[0]))
                 if self.acoustic_vocoder:
                     wav = acoustic_infer.run_vocoder(mel, f0=batch['f0'])
                     wavs.append(wav[0].detach().cpu())
             # Concatenate segments → full-song mel
-            full_mel = torch.cat(mels, dim=1)  # [n_mel, T_total]
+            full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
             tag = f'val_with_ds/{ds_path.stem}/{spk}'
             task.logger.all_rank_experiment.add_figure(
                 f'{tag}/mel',
@@ -566,11 +577,11 @@ class VarianceDsValidationRunner:
             for idx, param in enumerate(params):
                 batch = acoustic_infer.preprocess_input(param, idx=idx)
                 mel = acoustic_infer.forward_model(batch)
-                mels.append(mel[0])
+                mels.append(self._mel_to_time_major(mel[0]))
                 if self.acoustic_vocoder:
                     wav = acoustic_infer.run_vocoder(mel, f0=batch['f0'])
                     wavs.append(wav[0].detach().cpu())
-            full_mel = torch.cat(mels, dim=1)  # [n_mel, T_total]
+            full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
             full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
             return {
                 'tag': f'val_with_ds/{ds_path.stem}/{spk}',
