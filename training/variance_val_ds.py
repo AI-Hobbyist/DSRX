@@ -41,20 +41,26 @@ class VarianceDsValidationRunner:
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
-        self.spk_to_ds = self._normalize_spk_to_ds(cfg.get('spk') or {})
+        self.spk_to_ds = self._build_spk_to_ds(
+            ds_files=cfg.get('ds_files'),
+            ds_val_spks=cfg.get('ds_val_spks')
+        )
         self.acoustic_hparams = None
         self.acoustic_infer = None
         self.variance_infers = {}
         self._validated = False
 
         if self.acoustic_ckpt_dir is None:
-            raise ValueError('val_with_ds.acoustic_ckpt_dir is required when val_with_ds.spk is set.')
+            raise ValueError('val_with_ds.acoustic_ckpt_dir is required when val_with_ds.ds_files is set.')
         if not self.spk_to_ds:
-            raise ValueError('val_with_ds.spk must contain at least one speaker and .ds file.')
+            raise ValueError(
+                'val_with_ds.ds_files did not yield any valid speaker–.ds associations. '
+                'Make sure at least one .ds file maps to a speaker that has test_prefixes in datasets.'
+            )
 
     @staticmethod
     def is_enabled(cfg) -> bool:
-        return isinstance(cfg, dict) and bool(cfg.get('acoustic_ckpt_dir')) and bool(cfg.get('spk'))
+        return isinstance(cfg, dict) and bool(cfg.get('acoustic_ckpt_dir')) and bool(cfg.get('ds_files'))
 
     @staticmethod
     def _resolve_path(value):
@@ -65,17 +71,26 @@ class VarianceDsValidationRunner:
             path = Path.cwd() / path
         return path
 
-    def _normalize_spk_to_ds(self, spk_cfg) -> Dict[str, List[Path]]:
-        if not isinstance(spk_cfg, dict):
-            raise ValueError('val_with_ds.spk must be a mapping from speaker name to .ds file list.')
-        normalized = {}
-        for spk, ds_files in spk_cfg.items():
-            if isinstance(ds_files, (str, Path)):
-                ds_files = [ds_files]
-            if not isinstance(ds_files, list):
-                raise ValueError(f'val_with_ds.spk.{spk} must be a .ds path or a list of .ds paths.')
-            normalized[str(spk)] = [self._resolve_path(p) for p in ds_files]
-        return normalized
+    def _build_spk_to_ds(
+        self, ds_files, ds_val_spks
+    ) -> Dict[str, List[Path]]:
+        """Build speaker → .ds files mapping.
+
+        Each speaker in ``ds_val_spks`` gets **all** .ds files from ``ds_files``.
+        Speakers are used as-is; existence in the acoustic model's spk_map is
+        validated later in ``_validate``.
+        """
+        if not isinstance(ds_files, list) or len(ds_files) == 0:
+            raise ValueError('val_with_ds.ds_files must be a non-empty list of .ds file paths.')
+        if not isinstance(ds_val_spks, list) or len(ds_val_spks) == 0:
+            raise ValueError('val_with_ds.ds_val_spks must be a non-empty list of speaker names.')
+
+        resolved_paths = [self._resolve_path(f) for f in ds_files]
+
+        spk_to_ds: Dict[str, List[Path]] = {}
+        for spk in ds_val_spks:
+            spk_to_ds[str(spk)] = list(resolved_paths)
+        return spk_to_ds
 
     def _normalize_variance_ckpts(self, ckpt_cfg) -> dict:
         if not isinstance(ckpt_cfg, dict):
@@ -150,7 +165,7 @@ class VarianceDsValidationRunner:
             acoustic_spk_map = self._load_json(acoustic_spk_map_path)
             for spk in self.spk_to_ds:
                 if spk not in acoustic_spk_map:
-                    raise ValueError(f"Speaker '{spk}' from val_with_ds.spk is not in acoustic spk_map.json.")
+                    raise ValueError(f"Speaker '{spk}' (from ds_val_spks) is not in acoustic spk_map.json.")
 
         current_model_used = any(
             stage not in self.variance_ckpts and self._current_model_predicts(task, stage)
@@ -163,7 +178,7 @@ class VarianceDsValidationRunner:
             variance_spk_map = self._load_json(variance_spk_map_path)
             for spk in self.spk_to_ds:
                 if spk not in variance_spk_map:
-                    raise ValueError(f"Speaker '{spk}' from val_with_ds.spk is not in variance spk_map.json.")
+                    raise ValueError(f"Speaker '{spk}' (from ds_val_spks) is not in variance spk_map.json.")
 
         for stage, ckpt in self.variance_ckpts.items():
             ckpt_dir = ckpt['ckpt_dir']
@@ -177,12 +192,12 @@ class VarianceDsValidationRunner:
                 for spk in self.spk_to_ds:
                     if spk not in spk_map:
                         raise ValueError(
-                            f"Speaker '{spk}' from val_with_ds.spk is not in {stage} variance spk_map.json."
+                            f"Speaker '{spk}' (from ds_val_spks) is not in {stage} variance spk_map.json."
                         )
 
         for spk, ds_path in self._iter_ds_specs():
             if ds_path is None or not ds_path.exists():
-                raise FileNotFoundError(f"val_with_ds.spk.{spk} contains missing .ds file: {ds_path}")
+                raise FileNotFoundError(f"val_with_ds.ds_files contains missing .ds file: {ds_path}")
             params = self._load_ds(ds_path)
             if len(params) == 0:
                 raise ValueError(f'val_with_ds .ds file is empty: {ds_path}')

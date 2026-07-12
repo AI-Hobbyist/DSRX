@@ -101,7 +101,7 @@ pitch_prediction_args:
   backbone_args:
     num_layers: 6
     num_channels: 512
-   dropout_rate: 0.0
+    dropout_rate: 0.0
 
   # backbone_type: 'wavenet'
   # backbone_args:
@@ -144,7 +144,8 @@ max_updates: 100000
 num_valid_plots: 10
 val_check_interval: 2000
 # Optional .ds validation synthesis during variance training.
-# Speaker is always taken from val_with_ds.spk keys and overrides spk_mix/ph_spk_mix in .ds files.
+# ds_val_spks specifies which speakers to validate; each gets all ds_files.
+# Speakers must exist in the acoustic model's spk_map.
 val_with_ds:
   acoustic_ckpt_dir: null
   acoustic_ckpt_steps: null
@@ -165,9 +166,17 @@ val_with_ds:
       ckpt_steps: null
   max_samples_per_val: null
   seed: -1
-  spk:
-    CHANGE_ME_SPK:
-      - samples/valid/CHANGE_ME.ds
+  # ds_files: .ds files shared across all ds_val_spks.
+  # ds_val_spks: speakers to validate (must be in acoustic model's spk_map).
+  ds_files: []
+  ds_val_spks: []
+  # Example:
+  # ds_files:
+  #   - samples/valid/song1.ds
+  #   - samples/valid/song2.ds
+  # ds_val_spks:
+  #   - speaker1
+  #   - speaker2
 num_ckpt_keep: 5
 permanent_ckpt_start: 60000
 permanent_ckpt_interval: 10000
