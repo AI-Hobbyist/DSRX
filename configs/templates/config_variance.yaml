@@ -144,7 +144,8 @@ max_updates: 100000
 num_valid_plots: 10
 val_check_interval: 2000
 # Optional .ds validation synthesis during variance training.
-# ds_val_spks specifies which speakers to validate; each gets all ds_files.
+# ds_val_spks: speakers to validate.  If empty/null, auto-detected from
+#   datasets entries with non-empty test_prefixes.
 # Speakers must exist in the acoustic model's spk_map.
 #
 # ============================================================
@@ -228,6 +229,7 @@ val_with_ds:
   #   - a plain path string
   #   - {path: ..., lang: ...}  dict, where lang overrides the .ds file's language
   ds_files: []
+  # ds_val_spks: empty = auto-detect from datasets with test_prefixes
   ds_val_spks: []
 num_ckpt_keep: 5
 permanent_ckpt_start: 60000

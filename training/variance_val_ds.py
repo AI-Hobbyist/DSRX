@@ -92,15 +92,31 @@ class VarianceDsValidationRunner:
     ) -> Dict[str, List[DsEntry]]:
         """Build speaker → .ds files mapping.
 
-        Each speaker in ``ds_val_spks`` gets **all** .ds files from ``ds_files``.
+        If ``ds_val_spks`` is specified, those speakers are used directly.
+        Otherwise, speakers are auto-detected from ``datasets`` entries that have
+        non-empty ``test_prefixes``.
+
+        Each speaker gets **all** .ds files from ``ds_files``.
         Each entry is ``(path, lang)`` where *lang* may be ``None``.
-        Speakers are used as-is; existence in the acoustic model's spk_map is
-        validated later in ``_validate``.
+        Existence in the acoustic model's spk_map is validated later in ``_validate``.
         """
         if not isinstance(ds_files, list) or len(ds_files) == 0:
             raise ValueError('val_with_ds.ds_files must be a non-empty list.')
-        if not isinstance(ds_val_spks, list) or len(ds_val_spks) == 0:
-            raise ValueError('val_with_ds.ds_val_spks must be a non-empty list of speaker names.')
+
+        # Auto-detect speakers from datasets with test_prefixes if not explicitly given
+        if not ds_val_spks or (isinstance(ds_val_spks, list) and len(ds_val_spks) == 0):
+            datasets = hparams.get('datasets', [])
+            ds_val_spks = [
+                ds['speaker'] for ds in datasets
+                if ds.get('test_prefixes')
+            ]
+            if not ds_val_spks:
+                raise ValueError(
+                    'val_with_ds.ds_val_spks is empty and no datasets have test_prefixes. '
+                    'Either specify ds_val_spks or add test_prefixes to at least one dataset.'
+                )
+        elif not isinstance(ds_val_spks, list):
+            raise ValueError('val_with_ds.ds_val_spks must be a list of speaker names.')
 
         # Normalize + resolve all entries
         entries: List[VarianceDsValidationRunner.DsEntry] = []
