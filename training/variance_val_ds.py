@@ -364,6 +364,12 @@ class VarianceDsValidationRunner:
                 flag = (False, flag[1], flag[2])
             if param.get('f0_seq') is not None and not self.overwrite_ds_pitch:
                 flag = (flag[0], False, flag[2])
+            # When dur is not predicted but needed for mel2ph alignment,
+            # force dur prediction to avoid relying on .ds ph_dur which
+            # may be incompatible (e.g. rounds to zero frames).
+            need_dur_for_align = not flag[0] and (flag[1] or flag[2])
+            if need_dur_for_align and infer_ins.model.fs2.predict_dur:
+                flag = (True, flag[1], flag[2])
             predictor_flags.append(flag)
             batches.append(infer_ins.preprocess_input(
                 param, idx=i,
