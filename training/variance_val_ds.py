@@ -340,40 +340,52 @@ class VarianceDsValidationRunner:
                 yield stage, (self._get_current_variance_infer(task, stage), None)
 
     @staticmethod
-    def _collate_batches(batch_list: List[dict]) -> dict:
-        """Collate per-segment batch dicts into one batched dict for bulk forward."""
+    def _collate_batches(batch_list: List[dict]) -> Tuple[dict, List[dict]]:
+        """Collate per-segment batch dicts into one batched dict.
+        
+        Returns (collated_dict, orig_lengths) where orig_lengths stores
+        the original size of dim-1 for each tensor key, per segment.
+        """
         if len(batch_list) == 0:
-            return {}
+            return {}, []
         if len(batch_list) == 1:
-            return batch_list[0]
+            return batch_list[0], [{}]
 
         keys = batch_list[0].keys()
         collated = {}
+        all_lengths: List[dict] = [{} for _ in batch_list]
+
         for key in keys:
             tensors = [b[key] for b in batch_list]
             if all(t is None for t in tensors):
                 collated[key] = None
-            elif all(isinstance(t, torch.Tensor) for t in tensors):
-                ndim = tensors[0].dim()
-                # Normalize: ensure at least 2D [1, ...] for padding on dim 1
-                if ndim < 2:
-                    tensors = [t.unsqueeze(0) for t in tensors]
-                    ndim = 2
-                sizes = [t.shape[1] for t in tensors]
-                max_sz = max(sizes)
-                padded = []
-                for t in tensors:
-                    if t.shape[1] < max_sz:
-                        pad_len = max_sz - t.shape[1]
-                        # Pad only on the last dimension (time axis)
-                        pad_cfg = [0] * (2 * (ndim - 1))
-                        pad_cfg[-1] = pad_len
-                        t = F.pad(t, pad_cfg)
-                    padded.append(t)
-                collated[key] = torch.cat(padded, dim=0)
-            else:
+                continue
+
+            if not all(isinstance(t, torch.Tensor) for t in tensors):
                 collated[key] = tensors
-        return collated
+                continue
+
+            ndim = tensors[0].dim()
+            if ndim < 2:
+                tensors = [t.unsqueeze(0) for t in tensors]
+                ndim = 2
+
+            # Record original dim-1 size per segment
+            for seg_i, t in enumerate(tensors):
+                all_lengths[seg_i][key] = t.shape[1]
+
+            max_sz = max(t.shape[1] for t in tensors)
+            padded = []
+            for t in tensors:
+                if t.shape[1] < max_sz:
+                    pad_len = max_sz - t.shape[1]
+                    pad_cfg = [0] * (2 * (ndim - 1))
+                    pad_cfg[-1] = pad_len
+                    t = F.pad(t, pad_cfg)
+                padded.append(t)
+            collated[key] = torch.cat(padded, dim=0)
+
+        return collated, all_lengths
 
     def _complete_params(self, infer_ins, params: List[OrderedDict]) -> List[OrderedDict]:
         import librosa
@@ -433,7 +445,7 @@ class VarianceDsValidationRunner:
                 chunk_batches = [batches[i] for i in chunk_indices]
 
                 # Collate and forward
-                collated = self._collate_batches(chunk_batches)
+                collated, seq_lengths = self._collate_batches(chunk_batches)
                 (
                     infer_ins.model.fs2.predict_dur,
                     infer_ins.model.predict_pitch,
@@ -448,9 +460,10 @@ class VarianceDsValidationRunner:
                         infer_ins.model.predict_variances
                     ) = flag_saved
 
-                # --- Phase 3: unbatch results and fill param copies ---
+                # --- Phase 3: unbatch, trim to original lengths, fill param copies ---
                 for batch_idx, orig_idx in enumerate(chunk_indices):
                     param = params[orig_idx]
+                    seg_lens = seq_lengths[batch_idx] if batch_idx < len(seq_lengths) else {}
                     if 'seed' in param:
                         torch.manual_seed(param['seed'] & 0xffff_ffff)
                         torch.cuda.manual_seed_all(param['seed'] & 0xffff_ffff)
@@ -461,11 +474,17 @@ class VarianceDsValidationRunner:
                     param_copy = copy.deepcopy(param)
                     if dur_pred is not None:
                         d = dur_pred[batch_idx].cpu().numpy()
+                        orig_ph = seg_lens.get('tokens')
+                        if orig_ph is not None and len(d) > orig_ph:
+                            d = d[:orig_ph]
                         param_copy['ph_dur'] = ' '.join(
                             str(round(v, 6)) for v in (d * infer_ins.timestep).tolist()
                         )
                     if pitch_pred is not None:
                         p = pitch_pred[batch_idx].cpu().numpy()
+                        orig_mel = seg_lens.get('base_pitch') or seg_lens.get('mel2note')
+                        if orig_mel is not None and len(p) > orig_mel:
+                            p = p[:orig_mel]
                         f0 = librosa.midi_to_hz(p)
                         param_copy['f0_seq'] = ' '.join(str(round(v, 1)) for v in f0.tolist())
                         param_copy['f0_timestep'] = str(infer_ins.timestep)
@@ -480,6 +499,9 @@ class VarianceDsValidationRunner:
                             if not infer_ins.auto_completion_mode and v_name not in infer_ins.variance_prediction_set:
                                 continue
                             v = v_tensor[batch_idx].cpu().numpy()
+                            orig_mel = seg_lens.get('base_pitch') or seg_lens.get('mel2note')
+                            if orig_mel is not None and len(v) > orig_mel:
+                                v = v[:orig_mel]
                             param_copy[v_name] = ' '.join(str(round(x, 4)) for x in v.tolist())
                             param_copy[f'{v_name}_timestep'] = str(infer_ins.timestep)
                     results[orig_idx] = param_copy
