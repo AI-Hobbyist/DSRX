@@ -74,6 +74,7 @@ class VarianceDsValidationRunner:
         self.acoustic_use_spk_id = False
         self.acoustic_infer = None
         self.variance_infers = {}
+        self.spk_id_map = {}
         self._validated = False
 
         if self.acoustic_ckpt_dir is None:
@@ -287,10 +288,24 @@ class VarianceDsValidationRunner:
             for spk, ds_path, lang in specs
         ]
 
+    def _record_spk_ids(self, spk_map: dict, overwrite: bool = False):
+        for spk in self.spk_to_ds:
+            if spk in spk_map and (overwrite or spk not in self.spk_id_map):
+                self.spk_id_map[spk] = spk_map[spk]
+
+    def _speaker_tag(self, spk: str) -> str:
+        spk_id = self.spk_id_map.get(spk, spk)
+        return f'var_infer_{self._sanitize_tag_part(str(spk_id))}'
+
+    @staticmethod
+    def _figure_title(spk: str, ds_path: Path) -> str:
+        return f'{spk} - {ds_path.stem}'
+
     def _validate(self, task):
         self.acoustic_hparams = self._load_acoustic_hparams()
         self.acoustic_use_spk_id = bool(self.acoustic_hparams.get('use_spk_id', False))
         acoustic_spk_map_path = self.acoustic_ckpt_dir / 'spk_map.json'
+        acoustic_spk_map = None
         if self.acoustic_use_spk_id:
             if not acoustic_spk_map_path.exists():
                 raise FileNotFoundError(f'Acoustic spk_map.json not found in {self.acoustic_ckpt_dir}')
@@ -311,6 +326,7 @@ class VarianceDsValidationRunner:
             for spk in self.spk_to_ds:
                 if spk not in variance_spk_map:
                     raise ValueError(f"Speaker '{spk}' (from ds_val_spks) is not in variance spk_map.json.")
+            self._record_spk_ids(variance_spk_map, overwrite=True)
 
         for stage, ckpt in self.variance_ckpts.items():
             ckpt_dir = ckpt['ckpt_dir']
@@ -326,6 +342,12 @@ class VarianceDsValidationRunner:
                         raise ValueError(
                             f"Speaker '{spk}' (from ds_val_spks) is not in {stage} variance spk_map.json."
                         )
+                self._record_spk_ids(spk_map)
+
+        if acoustic_spk_map is not None:
+            self._record_spk_ids(acoustic_spk_map)
+        for idx, spk in enumerate(self.spk_to_ds):
+            self.spk_id_map.setdefault(spk, idx)
 
         for spk, ds_path, _ in self._iter_ds_specs():
             if ds_path is None or not ds_path.exists():
@@ -583,14 +605,14 @@ class VarianceDsValidationRunner:
                     wavs.append(wav[0].detach().cpu())
             # Concatenate segments → full-song mel
             full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
-            tag = f'val_with_ds/{ds_path.stem}/{spk}'
+            tag = f'{self._speaker_tag(spk)}/{self._sanitize_tag_part(ds_path.stem)}'
             task.logger.all_rank_experiment.add_figure(
                 f'{tag}/mel',
                 spec_to_figure(
                     full_mel,
                     self.acoustic_hparams.get('mel_vmin'),
                     self.acoustic_hparams.get('mel_vmax'),
-                    f'{spk} - {ds_path.stem}'
+                    self._figure_title(spk, ds_path)
                 ),
                 global_step=task.global_step
             )
@@ -618,8 +640,8 @@ class VarianceDsValidationRunner:
             full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
             full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
             return {
-                'tag': f'val_with_ds_{ds_label}/{spk}',
-                'title': f'{spk} - {ds_path.stem}',
+                'tag': f'{self._speaker_tag(spk)}/{ds_label}',
+                'title': self._figure_title(spk, ds_path),
                 'mel': full_mel.detach().cpu(),
                 'wav': full_wav,
                 'sample_rate': self.acoustic_hparams['audio_sample_rate'],
