@@ -15,6 +15,7 @@ from modules.toplevel import DiffSingerAcoustic, ShallowDiffusionOutput
 from modules.vocoders.registry import get_vocoder_cls
 from utils.hparams import hparams
 from utils.plot import spec_to_figure
+from utils.tensorboard_utils import validation_tb_tag
 
 matplotlib.use('Agg')
 
@@ -199,6 +200,15 @@ class AcousticTask(BaseTask):
     ############
     # validation plots
     ############
+    def _validation_tb_tag(self, prefix, data_idx):
+        return validation_tb_tag(
+            hparams.get('tb_layout', 'flat'),
+            prefix,
+            data_idx,
+            speaker=self.valid_dataset.metadata['spk_names'][data_idx],
+            item=self.valid_dataset.metadata['names'][data_idx]
+        )
+
     def plot_wav(self, data_idx, gt_mel, aux_mel, diff_mel, f0):
         f0_len = self.valid_dataset.metadata['f0'][data_idx]
         mel_len = self.valid_dataset.metadata['mel'][data_idx]
@@ -211,7 +221,11 @@ class AcousticTask(BaseTask):
         if data_idx not in self.logged_gt_wav:
             gt_wav = self.vocoder.spec2wav_torch(gt_mel, f0=f0)
             self.logger.all_rank_experiment.add_audio(
-                f'gt_{data_idx}', gt_wav,
+                self._validation_tb_tag(
+                    'aco_audio_gt' if hparams.get('tb_layout', 'flat') == 'grouped' else 'gt',
+                    data_idx
+                ),
+                gt_wav,
                 sample_rate=hparams['audio_sample_rate'],
                 global_step=self.global_step
             )
@@ -219,14 +233,22 @@ class AcousticTask(BaseTask):
         if aux_mel is not None:
             aux_wav = self.vocoder.spec2wav_torch(aux_mel, f0=f0)
             self.logger.all_rank_experiment.add_audio(
-                f'aux_{data_idx}', aux_wav,
+                self._validation_tb_tag(
+                    'aco_audio_aux' if hparams.get('tb_layout', 'flat') == 'grouped' else 'aux',
+                    data_idx
+                ),
+                aux_wav,
                 sample_rate=hparams['audio_sample_rate'],
                 global_step=self.global_step
             )
         if diff_mel is not None:
             diff_wav = self.vocoder.spec2wav_torch(diff_mel, f0=f0)
             self.logger.all_rank_experiment.add_audio(
-                f'diff_{data_idx}', diff_wav,
+                self._validation_tb_tag(
+                    'aco_audio_diff' if hparams.get('tb_layout', 'flat') == 'grouped' else 'diff',
+                    data_idx
+                ),
+                diff_wav,
                 sample_rate=hparams['audio_sample_rate'],
                 global_step=self.global_step
             )
@@ -237,6 +259,7 @@ class AcousticTask(BaseTask):
         mel_len = self.valid_dataset.metadata['mel'][data_idx]
         spec_cat = torch.cat([(out_spec - gt_spec).abs() + vmin, gt_spec, out_spec], -1)
         title_text = f"{self.valid_dataset.metadata['spk_names'][data_idx]} - {self.valid_dataset.metadata['names'][data_idx]}"
-        self.logger.all_rank_experiment.add_figure(f'{name_prefix}_{data_idx}', spec_to_figure(
+        tag_prefix = f'aco_{name_prefix}' if hparams.get('tb_layout', 'flat') == 'grouped' else name_prefix
+        self.logger.all_rank_experiment.add_figure(self._validation_tb_tag(tag_prefix, data_idx), spec_to_figure(
             spec_cat[:mel_len], vmin, vmax, title_text
         ), global_step=self.global_step)

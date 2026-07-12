@@ -18,6 +18,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_warn
 from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
 from utils.hparams import hparams
 from utils.plot import spec_to_figure
+from utils.tensorboard_utils import validation_tb_tag
 
 matplotlib.use('Agg')
 
@@ -287,13 +288,19 @@ class VarianceDsValidationRunner:
 
         return [
             (
-                f'var_mel_{self._sanitize_tag_part(spk)}/{path_to_label[str(ds_path.resolve())]}',
+                validation_tb_tag(
+                    hparams.get('tb_layout', 'flat'),
+                    'var_mel',
+                    idx,
+                    speaker=spk,
+                    item=path_to_label[str(ds_path.resolve())]
+                ),
                 path_to_label[str(ds_path.resolve())],
                 spk,
                 ds_path,
                 lang
             )
-            for spk, ds_path, lang in specs
+            for idx, (spk, ds_path, lang) in enumerate(specs)
         ]
 
     @staticmethod

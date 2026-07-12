@@ -15,6 +15,7 @@ from modules.metrics import (
 from modules.toplevel import DiffSingerVariance
 from utils.hparams import hparams
 from utils.plot import dur_to_figure, pitch_note_to_figure, curve_to_figure
+from utils.tensorboard_utils import validation_tb_tag
 from training.variance_val_ds import VarianceDsValidationRunner
 
 matplotlib.use('Agg')
@@ -330,11 +331,21 @@ class VarianceTask(BaseTask):
     ############
     # validation plots
     ############
+    def _validation_tb_tag(self, prefix, data_idx):
+        return validation_tb_tag(
+            hparams.get('tb_layout', 'flat'),
+            prefix,
+            data_idx,
+            speaker=self.valid_dataset.metadata['spk_names'][data_idx],
+            item=self.valid_dataset.metadata['names'][data_idx]
+        )
+
     def plot_dur(self, data_idx, gt_dur, pred_dur, txt=None):
         gt_dur = gt_dur[0].cpu().numpy()
         pred_dur = pred_dur[0].cpu().numpy()
         title_text = f"{self.valid_dataset.metadata['spk_names'][data_idx]} - {self.valid_dataset.metadata['names'][data_idx]}"
-        self.logger.all_rank_experiment.add_figure(f'dur_{data_idx}', dur_to_figure(
+        prefix = 'var_dur' if hparams.get('tb_layout', 'flat') == 'grouped' else 'dur'
+        self.logger.all_rank_experiment.add_figure(self._validation_tb_tag(prefix, data_idx), dur_to_figure(
             gt_dur, pred_dur, txt, title_text
         ), self.global_step)
 
@@ -345,7 +356,8 @@ class VarianceTask(BaseTask):
         note_dur = note_dur[0].cpu().numpy()
         note_rest = note_rest[0].cpu().numpy()
         title_text = f"{self.valid_dataset.metadata['spk_names'][data_idx]} - {self.valid_dataset.metadata['names'][data_idx]}"
-        self.logger.all_rank_experiment.add_figure(f'pitch_{data_idx}', pitch_note_to_figure(
+        prefix = 'var_pitch' if hparams.get('tb_layout', 'flat') == 'grouped' else 'pitch'
+        self.logger.all_rank_experiment.add_figure(self._validation_tb_tag(prefix, data_idx), pitch_note_to_figure(
             gt_pitch, pred_pitch, note_midi, note_dur, note_rest, title_text
         ), self.global_step)
 
@@ -355,6 +367,7 @@ class VarianceTask(BaseTask):
         if base_curve is not None:
             base_curve = base_curve[0].cpu().numpy()
         title_text = f"{self.valid_dataset.metadata['spk_names'][data_idx]} - {self.valid_dataset.metadata['names'][data_idx]}"
-        self.logger.all_rank_experiment.add_figure(f'{curve_name}_{data_idx}', curve_to_figure(
+        prefix = f'var_{curve_name}' if hparams.get('tb_layout', 'flat') == 'grouped' else curve_name
+        self.logger.all_rank_experiment.add_figure(self._validation_tb_tag(prefix, data_idx), curve_to_figure(
             gt_curve, pred_curve, base_curve, grid=grid, title=title_text
         ), self.global_step)

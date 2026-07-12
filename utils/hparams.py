@@ -45,6 +45,8 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
                             help='location of the data corpus')
         parser.add_argument('--infer', action='store_true', help='infer')
         parser.add_argument('--reset', action='store_true', help='reset hparams')
+        parser.add_argument('--tb_layout', type=str, default=None, choices=['flat', 'grouped'],
+                            help='TensorBoard validation tag layout')
         args, unknown = parser.parse_known_args()
         
         tmp_args_hparams = args.hparams.split(',') if args.hparams.strip() != '' else []
@@ -52,7 +54,7 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
         args.hparams = ','.join(tmp_args_hparams)
     else:
         args = Args(config=config, exp_name=exp_name, hparams=hparams_str,
-                    infer=False, reset=False)
+                    infer=False, reset=False, tb_layout=None)
 
     args_work_dir = ''
     if args.exp_name != '':
@@ -109,6 +111,9 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
                 hparams_[k] = eval(v)
             else:
                 hparams_[k] = type(hparams_[k])(v)
+    if args.tb_layout is not None:
+        hparams_['tb_layout'] = args.tb_layout
+    hparams_.setdefault('tb_layout', 'flat')
 
     @rank_zero_only
     def dump_hparams():
