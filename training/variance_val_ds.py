@@ -286,8 +286,14 @@ class VarianceDsValidationRunner:
             path_to_label[str(ds_path.resolve())] = label
 
         return [
-            (f'var_infer_{idx}', path_to_label[str(ds_path.resolve())], spk, ds_path, lang)
-            for idx, (spk, ds_path, lang) in enumerate(specs)
+            (
+                f'var_mel_{self._sanitize_tag_part(spk)}/{path_to_label[str(ds_path.resolve())]}',
+                path_to_label[str(ds_path.resolve())],
+                spk,
+                ds_path,
+                lang
+            )
+            for spk, ds_path, lang in specs
         ]
 
     @staticmethod
@@ -594,7 +600,7 @@ class VarianceDsValidationRunner:
             full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
             return {
                 'tag': tag,
-                'audio_tag': tag.replace('var_infer_', 'var_infer_audio_', 1),
+                'audio_tag': tag.replace('var_mel_', 'var_audio_', 1),
                 'title': self._figure_title(spk, ds_path),
                 'mel': full_mel.detach().cpu(),
                 'wav': full_wav,
