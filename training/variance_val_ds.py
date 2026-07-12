@@ -355,12 +355,17 @@ class VarianceDsValidationRunner:
                 collated[key] = None
             elif all(isinstance(t, torch.Tensor) for t in tensors):
                 ndim = tensors[0].dim()
+                # Normalize: ensure at least 2D [1, ...] for padding on dim 1
+                if ndim < 2:
+                    tensors = [t.unsqueeze(0) for t in tensors]
+                    ndim = 2
                 sizes = [t.shape[1] for t in tensors]
                 max_sz = max(sizes)
                 padded = []
                 for t in tensors:
                     if t.shape[1] < max_sz:
                         pad_len = max_sz - t.shape[1]
+                        # Pad only on the last dimension (time axis)
                         pad_cfg = [0] * (2 * (ndim - 1))
                         pad_cfg[-1] = pad_len
                         t = F.pad(t, pad_cfg)
