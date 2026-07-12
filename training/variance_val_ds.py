@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import os
 import re
@@ -599,6 +600,29 @@ class VarianceDsValidationRunner:
                 'mel_vmax': self.acoustic_hparams.get('mel_vmax')
             }
 
+    @staticmethod
+    def _add_figure_image(experiment, tag: str, figure, global_step: int):
+        try:
+            import matplotlib.pyplot as plt
+            from tensorboard.compat.proto.summary_pb2 import Summary
+
+            figure.canvas.draw()
+            width, height = figure.canvas.get_width_height()
+            buffer = io.BytesIO()
+            figure.savefig(buffer, format='png')
+            image = Summary.Image(
+                height=height,
+                width=width,
+                colorspace=3,
+                encoded_image_string=buffer.getvalue()
+            )
+            summary = Summary(value=[Summary.Value(tag=tag, image=image)])
+            experiment._get_file_writer().add_summary(summary, global_step)
+            plt.close(figure)
+            return True
+        except Exception:
+            return False
+
     def _log_acoustic_result(self, task, result: dict):
         experiment = task.logger.all_rank_experiment
         figure = spec_to_figure(
@@ -607,14 +631,18 @@ class VarianceDsValidationRunner:
             result.get('mel_vmax'),
             result['title']
         )
-        experiment.add_figure(result['tag'], figure, global_step=task.global_step)
+        if not self._add_figure_image(experiment, result['tag'], figure, task.global_step):
+            experiment.add_figure(result['tag'], figure, global_step=task.global_step)
         if result.get('wav') is not None:
+            wav = result['wav'].detach().cpu().float()
             experiment.add_audio(
                 result['tag'],
-                result['wav'],
+                wav,
                 sample_rate=result['sample_rate'],
                 global_step=task.global_step
             )
+        if hasattr(experiment, 'flush'):
+            experiment.flush()
 
     def run_spec(self, task, tag: str, ds_label: str, spk: str, ds_path: Path, lang: Optional[str]):
         with silence_output(enabled=not self.verbose):
