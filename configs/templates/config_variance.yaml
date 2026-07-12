@@ -214,6 +214,7 @@ val_with_ds:
   num_workers: 0
   worker_device: null
   show_progress: true
+  verbose: false
   # overwrite_*: force re-prediction even if .ds already has the value
   overwrite_ds_dur: false
   overwrite_ds_pitch: false

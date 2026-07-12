@@ -1,6 +1,9 @@
 import copy
 import json
 import multiprocessing
+import os
+import re
+import sys
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import OrderedDict
@@ -34,6 +37,22 @@ def temporary_hparams(new_hparams: dict):
     finally:
         hparams.clear()
         hparams.update(old_hparams)
+
+
+@contextmanager
+def silence_output(enabled: bool = True):
+    if not enabled:
+        yield
+        return
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    with open(os.devnull, 'w') as devnull:
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 
 def _init_val_with_ds_worker(ctx: dict):
@@ -99,6 +118,7 @@ class VarianceDsValidationRunner:
         self.worker_device = cfg.get('worker_device')
         self.mp_start_method = str(cfg.get('mp_start_method', 'spawn') or 'spawn')
         self.show_progress = bool(cfg.get('show_progress', True))
+        self.verbose = bool(cfg.get('verbose', False))
         self.variance_ckpts = self._normalize_variance_ckpts(cfg.get('variance_ckpts') or {})
         self.max_samples_per_val = cfg.get('max_samples_per_val')
         self.seed = int(cfg.get('seed', -1))
@@ -254,6 +274,39 @@ class VarianceDsValidationRunner:
                     return
                 yield spk, ds_path, lang
                 count += 1
+
+    @staticmethod
+    def _sanitize_tag_part(value: str) -> str:
+        value = re.sub(r'[^0-9A-Za-z._-]+', '_', value).strip('._-')
+        return value or 'ds'
+
+    def _add_ds_labels(self, specs):
+        unique_paths = []
+        seen_paths = set()
+        stem_counts = {}
+        for _, ds_path, _ in specs:
+            key = str(ds_path.resolve())
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            unique_paths.append(ds_path)
+            stem = self._sanitize_tag_part(ds_path.stem)
+            stem_counts[stem] = stem_counts.get(stem, 0) + 1
+
+        path_to_label = {}
+        for idx, ds_path in enumerate(unique_paths):
+            stem = self._sanitize_tag_part(ds_path.stem)
+            if stem_counts[stem] > 1:
+                parent = self._sanitize_tag_part(ds_path.parent.name)
+                label = f'{stem}_{parent}_{idx:02d}'
+            else:
+                label = stem
+            path_to_label[str(ds_path.resolve())] = label
+
+        return [
+            (path_to_label[str(ds_path.resolve())], spk, ds_path, lang)
+            for spk, ds_path, lang in specs
+        ]
 
     def _validate(self, task):
         self.acoustic_hparams = self._load_acoustic_hparams()
@@ -569,7 +622,7 @@ class VarianceDsValidationRunner:
                     global_step=task.global_step
                 )
 
-    def _synthesize_acoustic(self, task, spk: str, ds_path: Path, params: List[OrderedDict]):
+    def _synthesize_acoustic(self, task, ds_label: str, spk: str, ds_path: Path, params: List[OrderedDict]):
         acoustic_infer = self._get_acoustic_infer(task)
         with temporary_hparams(self.acoustic_hparams):
             mels = []
@@ -584,7 +637,7 @@ class VarianceDsValidationRunner:
             full_mel = torch.cat(mels, dim=0)  # [T_total, n_mel]
             full_wav = torch.cat(wavs, dim=-1) if self.acoustic_vocoder and wavs else None
             return {
-                'tag': f'val_with_ds/{ds_path.stem}/{spk}',
+                'tag': f'val_with_ds_{ds_label}/{spk}',
                 'title': f'{spk} - {ds_path.stem}',
                 'mel': full_mel.detach().cpu(),
                 'wav': full_wav,
@@ -612,15 +665,16 @@ class VarianceDsValidationRunner:
                 global_step=task.global_step
             )
 
-    def run_spec(self, task, spk: str, ds_path: Path, lang: Optional[str]):
-        params = self._load_ds(ds_path)
-        if self.acoustic_use_spk_id:
-            params = self._force_spk(params, spk)
-        params = self._apply_lang(params, lang)
-        completed_params = params
-        for stage in ('dur', 'pitch', 'variance'):
-            completed_params = self._complete_params_with_stage(task, stage, completed_params)
-        return self._synthesize_acoustic(task, spk, ds_path, completed_params)
+    def run_spec(self, task, ds_label: str, spk: str, ds_path: Path, lang: Optional[str]):
+        with silence_output(enabled=not self.verbose):
+            params = self._load_ds(ds_path)
+            if self.acoustic_use_spk_id:
+                params = self._force_spk(params, spk)
+            params = self._apply_lang(params, lang)
+            completed_params = params
+            for stage in ('dur', 'pitch', 'variance'):
+                completed_params = self._complete_params_with_stage(task, stage, completed_params)
+            return self._synthesize_acoustic(task, ds_label, spk, ds_path, completed_params)
 
     def _iter_progress(self, items, desc, unit, total=None):
         return tqdm.tqdm(
@@ -635,17 +689,17 @@ class VarianceDsValidationRunner:
 
     @staticmethod
     def _spec_label(spec) -> str:
-        spk, ds_path, _ = spec
-        return f'{spk}/{ds_path.stem}'
+        ds_label, spk, _, _ = spec
+        return f'{ds_label}/{spk}'
 
     def _run_serial(self, task, specs):
         success_count = 0
         pbar = self._iter_progress(specs, desc='val_with_ds', unit='item')
         for spec in pbar:
             pbar.set_postfix_str(self._spec_label(spec))
-            spk, ds_path, lang = spec
+            ds_label, spk, ds_path, lang = spec
             try:
-                result = self.run_spec(task, spk, ds_path, lang)
+                result = self.run_spec(task, ds_label, spk, ds_path, lang)
                 self._log_acoustic_result(task, result)
                 success_count += 1
             except Exception as exc:
@@ -686,7 +740,7 @@ class VarianceDsValidationRunner:
             for future in pbar:
                 spec = future_to_spec[future]
                 pbar.set_postfix_str(self._spec_label(spec))
-                spk, ds_path, _ = spec
+                _, spk, ds_path, _ = spec
                 try:
                     result = future.result()
                     self._log_acoustic_result(task, result)
@@ -706,7 +760,7 @@ class VarianceDsValidationRunner:
         was_training = task.model.training
         task.model.eval()
         try:
-            specs = list(self._iter_ds_specs())
+            specs = self._add_ds_labels(list(self._iter_ds_specs()))
             if self.num_workers > 1 and len(specs) > 1:
                 success_count = self._run_multiprocess(task, specs)
             else:
