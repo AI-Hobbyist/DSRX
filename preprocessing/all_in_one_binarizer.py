@@ -48,7 +48,10 @@ class AllInOneBinarizer(VarianceBinarizer):
             length = min(length, processed_input['length'])
             mel = mel[:length]
             processed_input['length'] = length
-            for key in ['mel2ph', 'pitch', 'uv', 'base_pitch', 'energy', 'breathiness', 'voicing', 'tension']:
+            for key in [
+                'mel2ph', 'mel2note', 'pitch', 'uv', 'base_pitch',
+                'energy', 'breathiness', 'voicing', 'tension'
+            ]:
                 if key in processed_input:
                     processed_input[key] = processed_input[key][:length]
         if 'mel2ph' not in processed_input:

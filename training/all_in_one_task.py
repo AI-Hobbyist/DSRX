@@ -83,7 +83,30 @@ class AllInOneDataset(BaseDataset):
             batch['key_shift'] = torch.FloatTensor([s.get('key_shift', 0.0) for s in samples])[:, None]
         if hparams['use_speed_embed']:
             batch['speed'] = torch.FloatTensor([s.get('speed', 1.0) for s in samples])[:, None]
+        self.align_frame_lengths(batch)
         return batch
+
+    def align_frame_lengths(self, batch):
+        frame_keys = ['mel2ph', 'mel', 'f0']
+        if hparams['predict_pitch']:
+            frame_keys += ['mel2note', 'base_pitch']
+        if hparams['predict_pitch'] or self.predict_variances:
+            frame_keys += ['pitch', 'uv']
+        frame_keys += list(self.required_variances)
+
+        lengths = [
+            batch[key].shape[1]
+            for key in frame_keys
+            if key in batch and batch[key].dim() >= 2
+        ]
+        if not lengths:
+            return
+        frame_length = min(lengths)
+        for key in frame_keys:
+            if key in batch and batch[key].dim() >= 2 and batch[key].shape[1] != frame_length:
+                batch[key] = batch[key][:, :frame_length, ...]
+        if 'lengths' in batch:
+            batch['lengths'] = batch['lengths'].clamp(max=frame_length)
 
 
 class AllInOneTask(BaseTask):
