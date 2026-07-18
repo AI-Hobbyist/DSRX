@@ -41,9 +41,18 @@ class SpectrogramStretchAugmentation(BaseAugmentation):
             aug_item['length'] = mel.shape[0]
             aug_item['speed'] = int(np.round(hparams['hop_size'] * speed)) / hparams['hop_size']  # real speed
             aug_item['seconds'] /= aug_item['speed']
-            aug_item['ph_dur'] /= aug_item['speed']
+            if np.issubdtype(aug_item['ph_dur'].dtype, np.integer):
+                ph_dur_sec = torch.from_numpy(
+                    aug_item['ph_dur'].astype(np.float32) * self.timestep / aug_item['speed']
+                ).to(self.device)
+                ph_acc = torch.round(torch.cumsum(ph_dur_sec, dim=0) / self.timestep + 0.5).long()
+                ph_dur = torch.diff(ph_acc, dim=0, prepend=torch.LongTensor([0]).to(self.device))
+                aug_item['ph_dur'] = ph_dur.cpu().numpy()
+            else:
+                aug_item['ph_dur'] /= aug_item['speed']
+                ph_dur_sec = torch.from_numpy(aug_item['ph_dur']).to(self.device)
             aug_item['mel2ph'] = get_mel2ph_torch(
-                self.lr, torch.from_numpy(aug_item['ph_dur']), aug_item['length'], self.timestep, device=self.device
+                self.lr, ph_dur_sec, aug_item['length'], self.timestep, device=self.device
             ).cpu().numpy()
 
             f0, _ = self.pe.get_pitch(

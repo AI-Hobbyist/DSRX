@@ -26,6 +26,10 @@ class AllInOneBinarizer(VarianceBinarizer):
             "Mel base must be set to 'e' for all-in-one acoustic training."
         )
 
+    def arrange_data_augmentation(self, data_iterator):
+        from preprocessing.acoustic_binarizer import AcousticBinarizer
+        return AcousticBinarizer.arrange_data_augmentation(self, data_iterator)
+
     @torch.no_grad()
     def process_item(self, item_name, meta_data, binarization_args):
         processed_input = super().process_item(item_name, meta_data, binarization_args)
