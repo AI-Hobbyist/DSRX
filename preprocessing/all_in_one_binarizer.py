@@ -65,7 +65,9 @@ class AllInOneBinarizer(VarianceBinarizer):
             print(f"Skipped '{item_name}': empty gt f0")
             return None
 
-        processed_input['mel'] = mel.cpu().numpy().astype(np.float32)
+        if isinstance(mel, torch.Tensor):
+            mel = mel.cpu().numpy()
+        processed_input['mel'] = mel.astype(np.float32, copy=False)
         processed_input['f0'] = f0.astype(np.float32)
         if hparams.get('use_key_shift_embed', False):
             processed_input['key_shift'] = 0.0
