@@ -76,6 +76,8 @@ augmentation_args:
     scale: 1.75
 
 diffusion_type: reflow
+main_loss_type: l2
+main_loss_log_norm: false
 enc_ffn_kernel_size: 3
 enc_attention_type: normal
 use_rope: true

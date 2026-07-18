@@ -109,6 +109,8 @@ dropout: 0.1
 
 # Diffusion and shallow diffusion settings for acoustic and variance branches.
 diffusion_type: reflow
+main_loss_type: l2
+main_loss_log_norm: false
 time_scale_factor: 1000
 timesteps: 1000
 max_beta: 0.02

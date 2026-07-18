@@ -93,11 +93,15 @@ class AllInOneTask(BaseTask):
         self.diffusion_type = hparams['diffusion_type']
         assert self.diffusion_type in ['ddpm', 'reflow'], f"Unknown diffusion type: {self.diffusion_type}"
 
+        all_in_one_cfg = hparams.get('all_in_one', {})
+        loss_cfg = all_in_one_cfg.get('diffusion_loss', {}) or {}
+        self.main_loss_type = loss_cfg.get('type', hparams.get('main_loss_type', 'l2'))
+        self.main_loss_log_norm = loss_cfg.get('log_norm', hparams.get('main_loss_log_norm', False))
+
         self.use_spk_id = hparams['use_spk_id']
         self.use_lang_id = hparams['use_lang_id']
         self.predict_dur = hparams['predict_dur']
         self.predict_pitch = hparams['predict_pitch']
-        all_in_one_cfg = hparams.get('all_in_one', {})
         self.train_dur = bool(all_in_one_cfg.get('train_dur', self.predict_dur))
         self.train_pitch = bool(all_in_one_cfg.get('train_pitch', self.predict_pitch))
         self.train_variance = bool(all_in_one_cfg.get('train_variance', True))
@@ -181,10 +185,10 @@ class AllInOneTask(BaseTask):
 
     def _build_diffusion_loss(self):
         if self.diffusion_type == 'ddpm':
-            return DiffusionLoss(loss_type=hparams['main_loss_type'])
+            return DiffusionLoss(loss_type=self.main_loss_type)
         if self.diffusion_type == 'reflow':
             return RectifiedFlowLoss(
-                loss_type=hparams['main_loss_type'], log_norm=hparams['main_loss_log_norm']
+                loss_type=self.main_loss_type, log_norm=self.main_loss_log_norm
             )
         raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
 
