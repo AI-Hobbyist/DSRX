@@ -1,0 +1,262 @@
+base_config:
+  - configs/templates/config_all_in_one.yaml
+
+work_dir: ckpt/all_in_one_lora
+
+dictionaries:
+  zh: data/pre/dictionaries/zh.txt
+all_phonemes: [AP, SP]
+extra_phonemes:
+merged_phoneme_groups: []
+lang_phoneme_separator: [/]
+
+f0_min: 52
+f0_max: 2600
+
+datasets:
+- raw_data_dir: data/opencpop_zh
+  speaker: opencpop_zh
+  spk_id: 20
+  language: zh
+  test_prefixes: 
+  - 2001000017
+  - 2002000063
+
+binary_data_dir: data/all/binary
+binarization_args:
+  shuffle: true
+  num_workers: 4
+  prefer_ds: false
+  allow_missing_phonemes: true
+
+pe: rmvpe
+pe_ckpt: ckpt/rmvpe/model.pt
+hnsep: vr
+hnsep_ckpt: ckpt/vr/model.pt
+vocoder: NsfHifiGAN
+vocoder_ckpt: ckpt/kouon_pc_mini_nsf-hifigan_1028/kouon_pc_mini_nsf-hifigan_1028_44100hz_512hop_128bin.ckpt
+
+use_lang_id: true
+num_lang: 1
+use_spk_id: true
+num_spk: 1
+
+predict_dur: true
+predict_pitch: true
+predict_energy: false
+predict_breathiness: true
+predict_voicing: true
+predict_tension: true
+
+use_energy_embed: false
+use_breathiness_embed: true
+use_voicing_embed: true
+use_tension_embed: true
+use_key_shift_embed: true
+use_speed_embed: true
+
+augmentation_args:
+  random_pitch_shifting:
+    enabled: true
+    range:
+    - -18.0
+    - 18.0
+    scale: 1.75
+  fixed_pitch_shifting:
+    enabled: false
+    targets:
+    - -5.0
+    - 5.0
+    scale: 0.5
+  random_time_stretching:
+    enabled: true
+    range:
+    - 0.2
+    - 3.0
+    scale: 1.75
+
+diffusion_type: reflow
+enc_ffn_kernel_size: 3
+enc_attention_type: normal
+use_rope: true
+use_shallow_diffusion: true
+T_start: 0.4
+T_start_infer: 0.4
+K_step: 300
+K_step_infer: 300
+
+backbone_type: lynxnet2
+backbone_args:
+  num_channels: 1024
+  num_layers: 6
+  kernel_size: 31
+  dropout_rate: 0.0
+
+shallow_diffusion_args:
+  train_aux_decoder: true
+  train_diffusion: true
+  val_gt_start: false
+  aux_decoder_arch: convnext
+  aux_decoder_args:
+    num_channels: 512
+    num_layers: 6
+    kernel_size: 7
+    dropout_rate: 0.1
+  aux_decoder_grad: 0.1
+lambda_aux_mel_loss: 0.2
+
+energy_db_min: -96.0
+energy_db_max: -12.0
+breathiness_db_min: -96.0
+breathiness_db_max: -20.0
+voicing_db_min: -96.0
+voicing_db_max: -12.0
+tension_logit_min: -10.0
+tension_logit_max: 10.0
+
+hidden_size: 256
+dur_prediction_args:
+  arch: resnet
+  hidden_size: 256
+  dropout: 0.1
+  num_layers: 5
+  kernel_size: 3
+  log_offset: 1.0
+  loss_type: mse
+  lambda_pdur_loss: 0.3
+  lambda_wdur_loss: 1.0
+  lambda_sdur_loss: 3.0
+
+use_melody_encoder: true
+melody_encoder_args:
+  hidden_size: 128
+  enc_layers: 4
+use_glide_embed: false
+glide_types:
+  - up
+  - down
+glide_embed_scale: 11.31370849898476
+
+pitch_prediction_args:
+  pitd_norm_min: -8.0
+  pitd_norm_max: 8.0
+  pitd_clip_min: -12.0
+  pitd_clip_max: 12.0
+  repeat_bins: 64
+  backbone_type: lynxnet2
+  backbone_args:
+    num_layers: 6
+    num_channels: 512
+    dropout_rate: 0.0
+
+variances_prediction_args:
+  total_repeat_bins: 48
+  backbone_type: lynxnet2
+  backbone_args:
+    num_layers: 6
+    num_channels: 384
+    dropout_rate: 0.0
+
+lambda_dur_loss: 1.0
+lambda_pitch_loss: 1.0
+lambda_var_loss: 1.0
+
+optimizer_args:
+  optimizer_cls: modules.optimizer.muon.Muon_AdamW
+  lr: 0.0006
+  muon_args:
+    weight_decay: 0.1
+  adamw_args:
+    weight_decay: 0.0
+lr_scheduler_args:
+  step_size: 5000
+  gamma: 0.8
+
+max_batch_frames: 50000
+max_batch_size: 64
+max_updates: 20ep
+num_valid_plots: 1
+val_with_vocoder: true
+val_check_interval: 1ep
+num_ckpt_keep: 100
+permanent_ckpt_start: 60000
+permanent_ckpt_interval: 10000
+pl_trainer_devices: auto
+pl_trainer_precision: bf16-mixed
+
+finetune_enabled: false
+freezing_enabled: false
+
+lora:
+  enabled: true
+  base_ckpt: finetune_ckpt_path
+  rank: 8
+  alpha: 16
+  target_modules:
+    - ^acoustic\.fs2\.
+    - ^acoustic\.diffusion\.
+    - ^variance\.fs2\.
+    - ^variance\.pitch_predictor\.
+    - ^variance\.variance_predictor\.
+  train_bias: true
+  merge_before_export: true
+  # Scope can be narrowed for partial all-in-one LoRA fine-tuning.
+  # dur is a branch inside the variance module.
+  module_scope:
+    acoustic: true
+    dur: true
+    pitch: true
+    variance: true
+
+all_in_one:
+  enabled: true
+  # Branch-level switches inside the variance module.
+  train_dur: true
+  train_pitch: true
+  train_variance: true
+  # Top-level acoustic module switch.
+  train_acoustic: true
+  shared_encoder: false
+  export_prefixes:
+    acoustic: model.acoustic
+    variance: model.variance
+  loss_weights:
+    dur: 1.0
+    pitch: 1.0
+    variance: 1.0
+    acoustic: 1.0
+    aux_mel: 0.2
+
+validation:
+  joint_infer: true
+  joint_infer_category: all_in_one_joint
+  num_joint_valid_plots: 10
+  val_with_vocoder: true
+  val_with_ds:
+    enabled: true
+    acoustic_vocoder: true
+    show_progress: true
+    verbose: false
+    infer_steps:
+      # Balanced validation defaults for SVS .ds previews.
+      # dur is not a diffusion sampling branch, so it is left at null.
+      # Raise pitch/variance/acoustic to 20-50+ for higher-quality previews.
+      dur: null
+      pitch: 10
+      variance: 10
+      acoustic: 15
+    overwrite_ds_dur: true
+    overwrite_ds_pitch: true
+    overwrite_ds_var: true
+    max_samples_per_val: null
+    seed: -1
+    # Each ds_files entry can be:
+    #   - a plain path string
+    #   - {path: ..., lang: ...}  dict, where lang overrides the .ds file's language
+    ds_files: 
+      - path: "variance_val/zszy_orig_key.ds"
+        lang: zh
+      - path: "variance_val/zszy_-8_key.ds"
+        lang: zh
+    # ds_val_spks: empty = auto-detect from datasets with test_prefixes
+    ds_val_spks: []

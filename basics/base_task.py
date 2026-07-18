@@ -81,7 +81,22 @@ class BaseTask(pl.LightningModule):
                 rank = int(lora_cfg.get('rank', 8))
                 alpha = int(lora_cfg.get('alpha', 16))
                 targets = lora_cfg.get('target_modules', ['linear'])
-                inject_lora(self.model, rank=rank, alpha=alpha, target_modules=targets)
+                module_prefixes = lora_cfg.get('module_prefixes')
+                module_scope = lora_cfg.get('module_scope')
+                if module_prefixes is None and isinstance(module_scope, dict):
+                    scope_prefix_map = {
+                        'acoustic': ['acoustic'],
+                        'dur': ['variance.fs2', 'dur_predictor'],
+                        'pitch': ['variance.pitch_predictor', 'pitch_predictor'],
+                        'variance': ['variance.variance_predictor', 'variance_predictor'],
+                    }
+                    module_prefixes = [
+                        prefix
+                        for scope, enabled in module_scope.items()
+                        if enabled
+                        for prefix in scope_prefix_map.get(scope, [])
+                    ]
+                inject_lora(self.model, rank=rank, alpha=alpha, target_modules=targets, module_prefixes=module_prefixes)
                 mark_only_lora_as_trainable(self.model, train_bias=bool(lora_cfg.get('train_bias', False)))
                 base_ckpt = lora_cfg.get('base_ckpt')
                 if base_ckpt:

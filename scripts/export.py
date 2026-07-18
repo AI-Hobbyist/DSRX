@@ -248,6 +248,110 @@ def variance(
         exit(-1)
 
 
+@main.command(name='all-in-one', help='Export all-in-one checkpoint as editor-compatible acoustic and variance ONNX artifacts.')
+@click.option(
+    '--exp', type=click.STRING,
+    required=True, metavar='EXP', callback=lambda ctx, param, value: find_exp(value),
+    help='Choose an all-in-one experiment to export.'
+)
+@click.option(
+    '--ckpt', type=click.IntRange(min=0),
+    required=False, metavar='STEPS',
+    help='Checkpoint training steps.'
+)
+@click.option(
+    '--out', type=click.Path(
+        dir_okay=True, file_okay=False,
+        path_type=pathlib.Path, resolve_path=True
+    ),
+    required=False,
+    help='Output directory for the artifacts.'
+)
+@click.option(
+    '--freeze_gender', type=click.FloatRange(min=-1, max=1),
+    help='(for random pitch shifting) Freeze gender value into the acoustic model.'
+)
+@click.option(
+    '--freeze_velocity', is_flag=True,
+    help='(for random time stretching) Freeze default velocity value into the acoustic model.'
+)
+@click.option(
+    '--freeze_glide', is_flag=True,
+    help='Freeze default glide embedding into the variance model.'
+)
+@click.option(
+    '--freeze_expr', is_flag=True,
+    help='Freeze default pitch expressiveness factor into the variance model.'
+)
+@click.option(
+    '--export_spk', type=click.STRING,
+    required=False, multiple=True,
+    help='(for multi-speaker models) Export one or more speaker or speaker mixture keys.'
+)
+@click.option(
+    '--freeze_spk', type=click.STRING,
+    required=False,
+    help='(for multi-speaker models) Freeze one speaker or speaker mixture into the exported models.'
+)
+@click.option(
+    '--precision', type=click.Choice(['fp32', 'fp16', 'bf16', 'all']),
+    default='fp32', show_default=True,
+    help='Target precision for acoustic ONNX export.'
+)
+@click.option(
+    '--quantize', is_flag=True, default=False,
+    help='Also export int8 quantized acoustic ONNX model.'
+)
+def all_in_one(
+        exp: str,
+        ckpt: int = None,
+        out: pathlib.Path = None,
+        freeze_gender: float = 0.,
+        freeze_velocity: bool = False,
+        freeze_glide: bool = False,
+        freeze_expr: bool = False,
+        export_spk: List[str] = None,
+        freeze_spk: str = None,
+        precision: str = 'fp32',
+        quantize: bool = False,
+):
+    if export_spk and freeze_spk:
+        print('--export_spk is exclusive to --freeze_spk.')
+        exit(-1)
+    if out is None:
+        out = root_dir / 'artifacts' / exp
+    export_spk_mix, freeze_spk_mix = parse_spk_settings(export_spk, freeze_spk)
+
+    sys.argv = [
+        sys.argv[0],
+        '--exp_name',
+        exp,
+        '--infer'
+    ]
+    set_hparams()
+    from deployment.exporters import AllInOneCompatExporter
+    print(f'| Exporter: {AllInOneCompatExporter}')
+    exporter = AllInOneCompatExporter(
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        cache_dir=root_dir / 'deployment' / 'cache',
+        ckpt_steps=ckpt,
+        precision=precision,
+        quantize=quantize,
+    )
+    try:
+        exporter.export(
+            out,
+            freeze_gender=freeze_gender,
+            freeze_velocity=freeze_velocity,
+            freeze_glide=freeze_glide,
+            freeze_expr=freeze_expr,
+            export_spk=export_spk_mix,
+            freeze_spk=freeze_spk_mix,
+        )
+    except KeyboardInterrupt:
+        exit(-1)
+
+
 @main.command(help='Export NSF-HiFiGAN vocoder model to ONNX format.')
 @click.option(
     '--config', type=click.Path(

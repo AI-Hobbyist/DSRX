@@ -52,11 +52,21 @@ def _match_module(name: str, patterns: Iterable[str]) -> bool:
     return False
 
 
-def inject_lora(model: nn.Module, *, rank: int = 8, alpha: int = 16, target_modules: Iterable[str] = ('linear',)):
+def inject_lora(
+        model: nn.Module, *, rank: int = 8, alpha: int = 16,
+        target_modules: Iterable[str] = ('linear',), module_prefixes: Iterable[str] = None
+):
     """Recursively replace Linear layers with LoRA-augmented ones.
     target_modules: iterable of regex patterns matched against full module names or 'linear' for all linears.
+    module_prefixes: optional full-name prefixes that limit where LoRA can be injected.
     """
     from modules.commons.common_layers import XavierUniformInitLinear  # available in runtime
+    module_prefixes = tuple(module_prefixes or ())
+
+    def allowed_by_prefix(name: str) -> bool:
+        if not module_prefixes:
+            return True
+        return any(name == p or name.startswith(p + '.') for p in module_prefixes)
 
     def replace(module: nn.Module, prefix: str = ''):
         for name, child in list(module.named_children()):
@@ -64,7 +74,12 @@ def inject_lora(model: nn.Module, *, rank: int = 8, alpha: int = 16, target_modu
             # Recurse first
             replace(child, full_name)
             # Replace Linear-like
-            if isinstance(child, (nn.Linear, XavierUniformInitLinear)) and _match_module(full_name, target_modules):
+            if (
+                    isinstance(child, (nn.Linear, XavierUniformInitLinear))
+                    and not isinstance(child, LoRALinear)
+                    and allowed_by_prefix(full_name)
+                    and _match_module(full_name, target_modules)
+            ):
                 lora = LoRALinear(child.in_features, child.out_features, r=rank, alpha=alpha, bias=child.bias is not None)
                 # copy base weights
                 lora.weight.data.copy_(child.weight.data)

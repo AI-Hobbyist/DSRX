@@ -27,6 +27,7 @@ class DiffSingerAcousticExporter(BaseExporter):
             freeze_spk: Tuple[str, Dict[str, float]] = None,
             precision: str = 'fp32',
             quantize: bool = False,
+            state_dict_override: Dict[str, torch.Tensor] = None,
     ):
         super().__init__(device=device, cache_dir=cache_dir, precision=precision, quantize=quantize)
         # Basic attributes
@@ -36,6 +37,7 @@ class DiffSingerAcousticExporter(BaseExporter):
         self.lang_map: dict = self.build_lang_map()
         self.phoneme_dictionary = load_phoneme_dictionary()
         self.use_lang_id = hparams.get('use_lang_id', False) and len(self.phoneme_dictionary.cross_lingual_phonemes) > 0
+        self.state_dict_override = state_dict_override
         self.model = self.build_model()
         self.fs2_aux_cache_path = self.cache_dir / (
             'fs2_aux.onnx' if self.model.use_shallow_diffusion else 'fs2.onnx'
@@ -92,6 +94,20 @@ class DiffSingerAcousticExporter(BaseExporter):
             })
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
+        if self.state_dict_override is not None:
+            if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+                from utils.lora import inject_lora, merge_lora_into_model
+                rank = int(lora_cfg.get('rank', 8))
+                alpha = int(lora_cfg.get('alpha', 16))
+                targets = lora_cfg.get('target_modules', ['linear'])
+                inject_lora(model, rank=rank, alpha=alpha, target_modules=targets)
+                model = model.to(self.device)
+            model.load_state_dict(self.state_dict_override, strict=False)
+            if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False) and lora_cfg.get('merge_before_export', True):
+                from utils.lora import merge_lora_into_model
+                merge_lora_into_model(model)
+            print('| load acoustic submodule state dict from all-in-one checkpoint.')
+            return model
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))

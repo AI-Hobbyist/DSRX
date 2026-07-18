@@ -24,7 +24,8 @@ class DiffSingerVarianceExporter(BaseExporter):
             freeze_glide: bool = False,
             freeze_expr: bool = False,
             export_spk: List[Tuple[str, Dict[str, float]]] = None,
-            freeze_spk: Tuple[str, Dict[str, float]] = None
+            freeze_spk: Tuple[str, Dict[str, float]] = None,
+            state_dict_override: Dict[str, torch.Tensor] = None
     ):
         super().__init__(device=device, cache_dir=cache_dir)
         # Basic attributes
@@ -34,6 +35,7 @@ class DiffSingerVarianceExporter(BaseExporter):
         self.lang_map: dict = self.build_lang_map()
         self.phoneme_dictionary = load_phoneme_dictionary()
         self.use_lang_id = hparams.get('use_lang_id', False) and len(self.phoneme_dictionary.cross_lingual_phonemes) > 0
+        self.state_dict_override = state_dict_override
         self.model = self.build_model()
         self.linguistic_encoder_cache_path = self.cache_dir / 'linguistic.onnx'
         self.dur_predictor_cache_path = self.cache_dir / 'dur.onnx'
@@ -92,6 +94,21 @@ class DiffSingerVarianceExporter(BaseExporter):
             })
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
+        if self.state_dict_override is not None:
+            if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+                from utils.lora import inject_lora, merge_lora_into_model
+                rank = int(lora_cfg.get('rank', 8))
+                alpha = int(lora_cfg.get('alpha', 16))
+                targets = lora_cfg.get('target_modules', ['linear'])
+                inject_lora(model, rank=rank, alpha=alpha, target_modules=targets)
+                model = model.to(self.device)
+            model.load_state_dict(self.state_dict_override, strict=False)
+            if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False) and lora_cfg.get('merge_before_export', True):
+                from utils.lora import merge_lora_into_model
+                merge_lora_into_model(model)
+            print('| load variance submodule state dict from all-in-one checkpoint.')
+            model.build_smooth_op(self.device)
+            return model
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))
