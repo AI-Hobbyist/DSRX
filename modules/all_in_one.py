@@ -59,16 +59,17 @@ class DiffSingerAllInOne(CategorizedModule):
             self._freeze_module(self.acoustic)
         if self.variance is None:
             return
-        if not cfg.get('train_dur', hparams.get('predict_dur', False)):
+        train_variance = cfg.get('train_variance', True)
+        if not train_variance and hparams.get('predict_dur', False):
             for module_name in ('dur_predictor', 'midi_embed', 'onset_embed', 'word_dur_embed'):
                 self._freeze_module(getattr(self.variance.fs2, module_name, None))
-        if not cfg.get('train_pitch', hparams.get('predict_pitch', False)):
+        if not train_variance and hparams.get('predict_pitch', False):
             for module_name in (
                     'pitch_predictor', 'melody_encoder', 'delta_pitch_embed',
                     'base_pitch_embed', 'pitch_retake_embed'
             ):
                 self._freeze_module(getattr(self.variance, module_name, None))
-        if not cfg.get('train_variance', self.variance.predict_variances):
+        if not train_variance:
             for module_name in ('variance_predictor', 'variance_embeds', 'pitch_embed'):
                 self._freeze_module(getattr(self.variance, module_name, None))
 

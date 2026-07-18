@@ -125,9 +125,9 @@ class AllInOneTask(BaseTask):
         self.use_lang_id = hparams['use_lang_id']
         self.predict_dur = hparams['predict_dur']
         self.predict_pitch = hparams['predict_pitch']
-        self.train_dur = bool(all_in_one_cfg.get('train_dur', self.predict_dur))
-        self.train_pitch = bool(all_in_one_cfg.get('train_pitch', self.predict_pitch))
         self.train_variance = bool(all_in_one_cfg.get('train_variance', True))
+        self.train_dur = self.train_variance and self.predict_dur
+        self.train_pitch = self.train_variance and self.predict_pitch
         self.train_acoustic = bool(all_in_one_cfg.get('train_acoustic', True))
         self.loss_weights = all_in_one_cfg.get('loss_weights', {}) or {}
         self.variance_prediction_list = [

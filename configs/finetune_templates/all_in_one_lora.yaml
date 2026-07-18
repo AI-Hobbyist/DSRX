@@ -212,11 +212,8 @@ lora:
 
 all_in_one:
   enabled: true
-  # Branch-level switches inside the variance module.
-  train_dur: true
-  train_pitch: true
+  # Top-level training switches. Variance sub-branches follow predict_* settings.
   train_variance: true
-  # Top-level acoustic module switch.
   train_acoustic: true
   shared_encoder: false
   export_prefixes:

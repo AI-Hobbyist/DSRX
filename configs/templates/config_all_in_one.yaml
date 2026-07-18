@@ -226,11 +226,8 @@ lambda_var_loss: 1.0
 #   - acoustic: consumes durations/f0/variance parameters and generates mel
 all_in_one:
   enabled: true
-  # Branch-level training switches inside the variance top-level module.
-  train_dur: true
-  train_pitch: true
+  # Top-level training switches. Variance sub-branches follow predict_* settings.
   train_variance: true
-  # Top-level acoustic module training switch.
   train_acoustic: true
   shared_encoder: false
   export_prefixes:
