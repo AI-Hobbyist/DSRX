@@ -165,7 +165,8 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
                     timesteps=hparams['timesteps'],
                     k_step=hparams['K_step'],
                     backbone_type=self.pitch_backbone_type,
-                    backbone_args=self.pitch_backbone_args
+                    backbone_args=self.pitch_backbone_args,
+                    use_shallow_diffusion=False
                 )
             elif self.diffusion_type == 'reflow':
                 self.pitch_predictor = PitchRectifiedFlow(
@@ -176,7 +177,8 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
                     repeat_bins=pitch_hparams['repeat_bins'],
                     time_scale_factor=hparams['time_scale_factor'],
                     backbone_type=self.pitch_backbone_type,
-                    backbone_args=self.pitch_backbone_args
+                    backbone_args=self.pitch_backbone_args,
+                    use_shallow_diffusion=False
                 )
             else:
                 raise ValueError(f"Invalid diffusion type: {self.diffusion_type}")

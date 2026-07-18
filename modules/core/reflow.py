@@ -13,12 +13,15 @@ from utils.hparams import hparams
 class RectifiedFlow(nn.Module):
     def __init__(self, out_dims, num_feats=1, t_start=0., time_scale_factor=1000,
                  backbone_type=None, backbone_args=None,
-                 spec_min=None, spec_max=None):
+                 spec_min=None, spec_max=None, use_shallow_diffusion=None):
         super().__init__()
         self.velocity_fn: nn.Module = build_backbone(out_dims, num_feats, backbone_type, backbone_args)
         self.out_dims = out_dims
         self.num_feats = num_feats
-        self.use_shallow_diffusion = hparams.get('use_shallow_diffusion', False)
+        self.use_shallow_diffusion = (
+            hparams.get('use_shallow_diffusion', False)
+            if use_shallow_diffusion is None else use_shallow_diffusion
+        )
         if self.use_shallow_diffusion:
             assert 0. <= t_start <= 1., 'T_start should be in [0, 1].'
         else:
@@ -147,7 +150,8 @@ class RectifiedFlow(nn.Module):
 class RepetitiveRectifiedFlow(RectifiedFlow):
     def __init__(self, vmin: float | int | list, vmax: float | int | list,
                  repeat_bins: int, time_scale_factor=1000,
-                 backbone_type=None, backbone_args=None):
+                 backbone_type=None, backbone_args=None,
+                 use_shallow_diffusion=None):
         assert (isinstance(vmin, (float, int)) and isinstance(vmin, (float, int))) or len(vmin) == len(vmax)
         num_feats = 1 if isinstance(vmin, (float, int)) else len(vmin)
         spec_min = [vmin] if num_feats == 1 else [[v] for v in vmin]
@@ -157,7 +161,8 @@ class RepetitiveRectifiedFlow(RectifiedFlow):
             out_dims=repeat_bins, num_feats=num_feats,
             time_scale_factor=time_scale_factor,
             backbone_type=backbone_type, backbone_args=backbone_args,
-            spec_min=spec_min, spec_max=spec_max
+            spec_min=spec_min, spec_max=spec_max,
+            use_shallow_diffusion=use_shallow_diffusion
         )
 
     def norm_spec(self, x):
@@ -185,7 +190,8 @@ class PitchRectifiedFlow(RepetitiveRectifiedFlow):
     def __init__(self, vmin: float, vmax: float,
                  cmin: float, cmax: float, repeat_bins,
                  time_scale_factor=1000,
-                 backbone_type=None, backbone_args=None):
+                 backbone_type=None, backbone_args=None,
+                 use_shallow_diffusion=None):
         self.vmin = vmin  # norm min
         self.vmax = vmax  # norm max
         self.cmin = cmin  # clip min
@@ -193,7 +199,8 @@ class PitchRectifiedFlow(RepetitiveRectifiedFlow):
         super().__init__(
             vmin=vmin, vmax=vmax, repeat_bins=repeat_bins,
             time_scale_factor=time_scale_factor,
-            backbone_type=backbone_type, backbone_args=backbone_args
+            backbone_type=backbone_type, backbone_args=backbone_args,
+            use_shallow_diffusion=use_shallow_diffusion
         )
 
     def norm_spec(self, x):
@@ -208,7 +215,8 @@ class MultiVarianceRectifiedFlow(RepetitiveRectifiedFlow):
             self, ranges: List[Tuple[float, float]],
             clamps: List[Tuple[float | None, float | None] | None],
             repeat_bins, time_scale_factor=1000,
-            backbone_type=None, backbone_args=None
+            backbone_type=None, backbone_args=None,
+            use_shallow_diffusion=None
     ):
         assert len(ranges) == len(clamps)
         self.clamps = clamps
@@ -221,7 +229,8 @@ class MultiVarianceRectifiedFlow(RepetitiveRectifiedFlow):
         super().__init__(
             vmin=vmin, vmax=vmax, repeat_bins=repeat_bins,
             time_scale_factor=time_scale_factor,
-            backbone_type=backbone_type, backbone_args=backbone_args
+            backbone_type=backbone_type, backbone_args=backbone_args,
+            use_shallow_diffusion=use_shallow_diffusion
         )
 
     def clamp_spec(self, xs: list | tuple):

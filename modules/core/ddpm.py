@@ -55,7 +55,7 @@ beta_schedule = {
 class GaussianDiffusion(nn.Module):
     def __init__(self, out_dims, num_feats=1, timesteps=1000, k_step=1000,
                  backbone_type=None, backbone_args=None, betas=None,
-                 spec_min=None, spec_max=None):
+                 spec_min=None, spec_max=None, use_shallow_diffusion=None):
         super().__init__()
         self.denoise_fn: nn.Module = build_backbone(out_dims, num_feats, backbone_type, backbone_args)
         self.out_dims = out_dims
@@ -70,7 +70,10 @@ class GaussianDiffusion(nn.Module):
         alphas_cumprod = np.cumprod(alphas, axis=0)
         alphas_cumprod_prev = np.append(1., alphas_cumprod[:-1])
 
-        self.use_shallow_diffusion = hparams.get('use_shallow_diffusion', False)
+        self.use_shallow_diffusion = (
+            hparams.get('use_shallow_diffusion', False)
+            if use_shallow_diffusion is None else use_shallow_diffusion
+        )
         if self.use_shallow_diffusion:
             assert k_step <= timesteps, 'K_step should not be larger than timesteps.'
         self.timesteps = timesteps
@@ -387,7 +390,7 @@ class RepetitiveDiffusion(GaussianDiffusion):
     def __init__(self, vmin: float | int | list, vmax: float | int | list,
                  repeat_bins: int, timesteps=1000, k_step=1000,
                  backbone_type=None, backbone_args=None,
-                 betas=None):
+                 betas=None, use_shallow_diffusion=None):
         assert (isinstance(vmin, (float, int)) and isinstance(vmin, (float, int))) or len(vmin) == len(vmax)
         num_feats = 1 if isinstance(vmin, (float, int)) else len(vmin)
         spec_min = [vmin] if num_feats == 1 else [[v] for v in vmin]
@@ -397,7 +400,8 @@ class RepetitiveDiffusion(GaussianDiffusion):
             out_dims=repeat_bins, num_feats=num_feats,
             timesteps=timesteps, k_step=k_step,
             backbone_type=backbone_type, backbone_args=backbone_args,
-            betas=betas, spec_min=spec_min, spec_max=spec_max
+            betas=betas, spec_min=spec_min, spec_max=spec_max,
+            use_shallow_diffusion=use_shallow_diffusion
         )
 
     def norm_spec(self, x):
@@ -426,7 +430,7 @@ class PitchDiffusion(RepetitiveDiffusion):
                  cmin: float, cmax: float, repeat_bins,
                  timesteps=1000, k_step=1000,
                  backbone_type=None, backbone_args=None,
-                 betas=None):
+                 betas=None, use_shallow_diffusion=None):
         self.vmin = vmin  # norm min
         self.vmax = vmax  # norm max
         self.cmin = cmin  # clip min
@@ -435,7 +439,7 @@ class PitchDiffusion(RepetitiveDiffusion):
             vmin=vmin, vmax=vmax, repeat_bins=repeat_bins,
             timesteps=timesteps, k_step=k_step,
             backbone_type=backbone_type, backbone_args=backbone_args,
-            betas=betas
+            betas=betas, use_shallow_diffusion=use_shallow_diffusion
         )
 
     def norm_spec(self, x):
@@ -451,7 +455,7 @@ class MultiVarianceDiffusion(RepetitiveDiffusion):
             clamps: List[Tuple[float | None, float | None] | None],
             repeat_bins, timesteps=1000, k_step=1000,
             backbone_type=None, backbone_args=None,
-            betas=None
+            betas=None, use_shallow_diffusion=None
     ):
         assert len(ranges) == len(clamps)
         self.clamps = clamps
@@ -465,7 +469,7 @@ class MultiVarianceDiffusion(RepetitiveDiffusion):
             vmin=vmin, vmax=vmax, repeat_bins=repeat_bins,
             timesteps=timesteps, k_step=k_step,
             backbone_type=backbone_type, backbone_args=backbone_args,
-            betas=betas
+            betas=betas, use_shallow_diffusion=use_shallow_diffusion
         )
 
     def clamp_spec(self, xs: list | tuple):

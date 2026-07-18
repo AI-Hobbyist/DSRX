@@ -79,7 +79,8 @@ class ParameterAdaptorModule(torch.nn.Module):
                 'timesteps': hparams.get('timesteps'),
                 'time_scale_factor': hparams.get('time_scale_factor'),
                 'backbone_type': backbone_type,
-                'backbone_args': backbone_args
+                'backbone_args': backbone_args,
+                'use_shallow_diffusion': False
             },
             cls
         )
