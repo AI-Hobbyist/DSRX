@@ -250,8 +250,8 @@ optimizer_args:
 lr_scheduler_args:
   step_size: 5000
   gamma: 0.8
-max_batch_frames: 50000
-max_batch_size: 64
+max_batch_frames: 40000
+max_batch_size: 40
 max_updates: 100000
 
 dataset_size_key: lengths
