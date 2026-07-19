@@ -248,7 +248,7 @@ validation:
     overwrite_ds_pitch: true
     overwrite_ds_var: true
     max_samples_per_val: null
-    seed: -1
+    seed: 1234
     # Each ds_files entry can be:
     #   - a plain path string
     #   - {path: ..., lang: ...}  dict, where lang overrides the .ds file's language
