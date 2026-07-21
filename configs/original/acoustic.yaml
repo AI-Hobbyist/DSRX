@@ -54,6 +54,7 @@ use_lang_id: true
 num_lang: 2
 use_spk_id: true
 num_spk: 14
+use_artifact_embed: false
 use_energy_embed: false
 use_breathiness_embed: false
 use_voicing_embed: false

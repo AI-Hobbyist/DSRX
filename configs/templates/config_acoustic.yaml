@@ -12,6 +12,7 @@ datasets:
     speaker: speaker1
     spk_id: 0
     language: zh
+    artifact_level: 0  # 0 = clean, 1 = artifact-heavy
     test_prefixes:
       - wav1
       - wav2
@@ -22,6 +23,7 @@ datasets:
     speaker: speaker2
     spk_id: 1
     language: zh
+    artifact_level: 1  # artifact-heavy example
     test_prefixes:
       - wav1
       - wav2
@@ -44,6 +46,7 @@ use_lang_id: false
 num_lang: 1
 use_spk_id: false
 num_spk: 1
+use_artifact_embed: false  # Enable to use dataset artifact_level labels.
 
 # NOTICE: before enabling variance embeddings, please read the docs at
 # https://github.com/openvpi/DiffSinger/tree/main/docs/BestPractices.md#choosing-variance-parameters
