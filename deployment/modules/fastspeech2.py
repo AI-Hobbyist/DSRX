@@ -127,6 +127,13 @@ class FastSpeech2AcousticONNX(FastSpeech2Acoustic):
                 condition += self.frozen_spk_embed
             else:
                 condition += spk_embed
+
+        if self.use_artifact_embed:
+            if hasattr(self, 'frozen_artifact_level'):
+                artifact_level = self.frozen_artifact_level
+            else:
+                artifact_level = torch.zeros(condition.shape[0], dtype=torch.long, device=condition.device)
+            condition += self.artifact_embed(artifact_level)[:, None, :]
         return condition
 
 

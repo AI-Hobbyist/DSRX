@@ -66,6 +66,11 @@ class DiffSingerAcousticExporter(BaseExporter):
             key_shift = freeze_gender * shift_max if freeze_gender >= 0. else freeze_gender * abs(shift_min)
             key_shift = max(min(key_shift, shift_max), shift_min)  # clip key shift
             self.model.fs2.register_buffer('frozen_key_shift', torch.FloatTensor([key_shift]).to(self.device))
+        if hparams.get('use_artifact_embed', False):
+            self.model.fs2.register_buffer(
+                'frozen_artifact_level',
+                torch.zeros(1, dtype=torch.long, device=self.device)
+            )
         if hparams['use_spk_id']:
             if not self.export_spk and self.freeze_spk is None:
                 # In case the user did not specify any speaker settings:
@@ -171,6 +176,7 @@ class DiffSingerAcousticExporter(BaseExporter):
             }
         dsconfig['use_key_shift_embed'] = self.expose_gender
         dsconfig['use_speed_embed'] = self.expose_velocity
+        dsconfig['use_artifact_embed'] = hparams.get('use_artifact_embed', False)
         for variance in VARIANCE_CHECKLIST:
             dsconfig[f'use_{variance}_embed'] = (variance in self.model.fs2.variance_embed_list)
         # sampling acceleration and shallow diffusion

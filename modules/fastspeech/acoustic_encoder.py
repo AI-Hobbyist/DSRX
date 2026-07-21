@@ -62,6 +62,10 @@ class FastSpeech2Acoustic(nn.Module):
         if self.use_spk_id:
             self.spk_embed = Embedding(hparams['num_spk'], hparams['hidden_size'])
 
+        self.use_artifact_embed = hparams.get('use_artifact_embed', False)
+        if self.use_artifact_embed:
+            self.artifact_embed = Embedding(2, hparams['hidden_size'])
+
     def forward_variance_embedding(self, condition, key_shift=None, speed=None, **variances):
         if self.use_variance_embeds:
             variance_embeds = torch.stack([
@@ -83,7 +87,7 @@ class FastSpeech2Acoustic(nn.Module):
     def forward(
             self, txt_tokens, mel2ph, f0,
             key_shift=None, speed=None,
-            spk_embed_id=None, languages=None,
+            spk_embed_id=None, artifact_level=None, languages=None,
             **kwargs
     ):
         txt_embed = self.txt_embed(txt_tokens)
@@ -107,6 +111,13 @@ class FastSpeech2Acoustic(nn.Module):
             else:
                 spk_embed = self.spk_embed(spk_embed_id)[:, None, :]
             condition += spk_embed
+
+        if self.use_artifact_embed:
+            if artifact_level is None:
+                artifact_level = torch.zeros(condition.shape[0], dtype=torch.long, device=condition.device)
+            else:
+                artifact_level = artifact_level.to(dtype=torch.long, device=condition.device)
+            condition += self.artifact_embed(artifact_level)[:, None, :]
 
         f0_mel = (1 + f0 / 700).log()
         pitch_embed = self.pitch_embed(f0_mel[:, :, None])

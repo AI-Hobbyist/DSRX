@@ -35,6 +35,7 @@ class AcousticDataset(BaseDataset):
         self.need_key_shift = hparams['use_key_shift_embed']
         self.need_speed = hparams['use_speed_embed']
         self.need_spk_id = hparams['use_spk_id']
+        self.need_artifact_level = hparams.get('use_artifact_embed', False)
         self.need_lang_id = hparams['use_lang_id']
 
     def collater(self, samples):
@@ -61,6 +62,8 @@ class AcousticDataset(BaseDataset):
         if self.need_spk_id:
             spk_ids = torch.LongTensor([s['spk_id'] for s in samples])
             batch['spk_ids'] = spk_ids
+        if self.need_artifact_level:
+            batch['artifact_levels'] = torch.LongTensor([s.get('artifact_level', 0) for s in samples])
         if self.need_lang_id:
             languages = utils.collate_nd([s['languages'] for s in samples], 0)
             batch['languages'] = languages
@@ -132,6 +135,7 @@ class AcousticTask(BaseTask):
             spk_embed_id = sample['spk_ids']
         else:
             spk_embed_id = None
+        artifact_level = sample.get('artifact_levels') if hparams.get('use_artifact_embed', False) else None
         if hparams['use_lang_id']:
             languages = sample['languages']
         else:
@@ -139,7 +143,7 @@ class AcousticTask(BaseTask):
         output: ShallowDiffusionOutput = self.model(
             txt_tokens, mel2ph=mel2ph, f0=f0, **variances,
             key_shift=key_shift, speed=speed,
-            spk_embed_id=spk_embed_id, languages=languages,
+            spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
             gt_mel=target, infer=infer
         )
 
