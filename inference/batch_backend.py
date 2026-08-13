@@ -122,7 +122,16 @@ class BatchInferenceBackend:
             load_vocoder=True,
             ckpt_steps=self.ckpt_steps,
         )
-        reporter("status", {"state": "model_ready"})
+        vocoder_optimization = self._infer.warmup_vocoder()
+        optimization = getattr(self._infer, "inference_optimization", None)
+        reporter(
+            "status",
+            {
+                "state": "model_ready",
+                "optimization": optimization.to_dict() if optimization else None,
+                "vocoder_optimization": vocoder_optimization,
+            },
+        )
         self._last_active = time.time()
 
     def _load_variance_model(self, reporter: ReportFn, predictions: set):
@@ -141,7 +150,14 @@ class BatchInferenceBackend:
             predictions=predictions,
         )
         self._variance_predictions = predictions
-        reporter("status", {"state": "variance_model_ready"})
+        optimization = getattr(self._variance_infer, "inference_optimization", None)
+        reporter(
+            "status",
+            {
+                "state": "variance_model_ready",
+                "optimization": optimization.to_dict() if optimization else None,
+            },
+        )
         self._last_active = time.time()
 
     def _unload_model(self, reason: str):
@@ -156,6 +172,7 @@ class BatchInferenceBackend:
                 if self._variance_infer is not None:
                     del self._variance_infer
                     self._variance_infer = None
+                    self._variance_predictions = None
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -180,7 +197,7 @@ class BatchInferenceBackend:
         def _loop():
             while True:
                 time.sleep(self.monitor_interval)
-                if self._infer is None:
+                if self._infer is None and self._variance_infer is None:
                     continue
                 now = time.time()
                 idle = (now - self._last_active) / 60.0
@@ -210,7 +227,7 @@ class BatchInferenceBackend:
             if hparams.get("use_spk_id", False):
                 # Ensure spk_mix_embed exists for batching
                 if "spk_mix_embed" not in batch and "spk_mix_id" in batch and "spk_mix_value" in batch:
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         batch["spk_mix_embed"] = torch.sum(
                             self.infer.model.fs2.spk_embed(batch["spk_mix_id"])
                             * batch["spk_mix_value"].unsqueeze(3),
@@ -386,7 +403,7 @@ class BatchInferenceBackend:
                 )
                 collated, mel_lengths = self._collate(sub)
                 collated = {k: (v.to(self.infer.device) if torch.is_tensor(v) else v) for k, v in collated.items()}
-                with torch.no_grad():
+                with torch.inference_mode():
                     mel_pred = self.infer.forward_model(collated)
 
                 # run vocoder or collect mel
@@ -396,9 +413,11 @@ class BatchInferenceBackend:
                     mel_slice = mel_pred[i : i + 1, :mel_len]
                     if return_type == "wav":
                         f0_slice = collated["f0"][i : i + 1, :mel_len]
-                        with torch.no_grad():
+                        with torch.inference_mode():
                             audio = (
-                                self.infer.run_vocoder(mel_slice, f0=f0_slice)[0]
+                                self.infer.run_vocoder(
+                                    mel_slice, f0=f0_slice, use_vocoder_buckets=True
+                                )[0]
                                 .cpu()
                                 .numpy()
                                 .astype(np.float32)
@@ -461,7 +480,6 @@ class BatchInferenceBackend:
                 p["ph_spk_mix_backup"] = p.get("ph_spk_mix")
                 p["spk_mix_backup"] = p.get("spk_mix")
                 p["ph_spk_mix"] = p["spk_mix"] = spk_mix
-        self._load_variance_model(reporter)
         self._load_variance_model(reporter, predictions)
         reporter("status", {"state": "variance_preprocessing", "segments": len(params)})
         start = time.perf_counter()
@@ -643,13 +661,23 @@ def main():
     if not args.config and not args.exp:
         raise SystemExit("Either --config or --exp must be provided.")
 
+    config_path = (
+        Path(args.config)
+        if args.config
+        else ROOT / "ckpt" / args.exp / "config.yaml"
+    )
+    if not config_path.is_file():
+        raise SystemExit(f"Config not found: {config_path}")
     set_hparams(
-        config=args.config,
+        config=str(config_path),
         exp_name=args.exp,
         hparams_str=args.hparams,
         global_hparams=True,
         print_hparams=True,
     )
+    if not args.exp:
+        # A standalone saved config is expected to live beside its checkpoint.
+        hparams["work_dir"] = str(config_path.resolve().parent)
 
     backend = BatchInferenceBackend(
         batch_size=args.batch_size,

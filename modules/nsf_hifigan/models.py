@@ -199,6 +199,7 @@ class SourceModuleHnNSF(torch.nn.Module):
 
     def forward(self, x, upp):
         sine_wavs = self.l_sin_gen(x, upp)
+        sine_wavs = sine_wavs.to(dtype=self.l_linear.weight.dtype)
         sine_merge = self.l_tanh(self.l_linear(sine_wavs))
         return sine_merge
 
@@ -263,10 +264,17 @@ class Generator(torch.nn.Module):
         return sines
 
     def forward(self, x, f0):
+        # Keep the phase accumulator in FP32 even when the convolutional
+        # generator is stored in FP16 for inference.  Accumulating phase in
+        # FP16 creates audible drift on long phrases.
+        model_dtype = self.conv_pre.weight.dtype
+        source_f0 = f0.float() if model_dtype == torch.float16 else f0
         if self.mini_nsf:
-            har_source = self.fastsinegen(f0)
+            har_source = self.fastsinegen(source_f0)
         else:
-            har_source = self.m_source(f0, self.upp).transpose(1, 2)
+            har_source = self.m_source(source_f0, self.upp).transpose(1, 2)
+        x = x.to(dtype=model_dtype)
+        har_source = har_source.to(dtype=model_dtype)
         x = self.conv_pre(x)
         if self.noise_sigma is not None and self.noise_sigma > 0:
             x += self.noise_sigma * torch.randn_like(x)

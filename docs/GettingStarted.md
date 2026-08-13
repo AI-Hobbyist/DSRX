@@ -96,6 +96,13 @@ python scripts/infer.py acoustic --help
 
 for more configurable options.
 
+CUDA inference automatically enables the profiled native PyTorch fast path,
+including selective FP16 linear layers, a frozen TorchScript velocity backbone
+and representative phrase-length warmup. See
+[Native PyTorch Inference Optimization](InferenceOptimization.md) for the exact
+behavior, configuration switches, batch-backend reporting and the optional
+inference-only checkpoint format.
+
 ## Deployment
 
 DiffSinger uses [ONNX](https://onnx.ai/) as the deployment format.

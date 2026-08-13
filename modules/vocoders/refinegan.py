@@ -1,8 +1,10 @@
 import json
 import pathlib
+from contextlib import nullcontext
 from typing import Any, Dict, Optional
 
 import torch
+import torch.nn.functional as F
 import yaml
 
 from basics.base_vocoder import BaseVocoder
@@ -122,6 +124,21 @@ class RefineGAN(BaseVocoder):
 
         print(f"| Load RefineGAN generator: {self.ckpt_path}")
         self._load_generator_state(self.ckpt_path)
+        self.generator.eval()
+        self.generator.remove_weight_norm()
+        self._optimization_enabled = bool(hparams.get("inference_optimization", True))
+        self._autocast = False
+        self._full_fp16 = False
+        self._chunking = False
+        self._chunk_frames = int(hparams.get("inference_vocoder_refinegan_chunk_frames", 3500))
+        self._chunk_overlap = int(hparams.get("inference_vocoder_refinegan_chunk_overlap", 128))
+        if self._chunk_frames <= 0:
+            raise ValueError("inference_vocoder_refinegan_chunk_frames must be positive.")
+        if not 0 <= self._chunk_overlap < self._chunk_frames:
+            raise ValueError(
+                "inference_vocoder_refinegan_chunk_overlap must be non-negative "
+                "and smaller than chunk_frames."
+            )
 
     def _load_generator_state(self, ckpt_path: pathlib.Path):
         obj = torch.load(str(ckpt_path), map_location="cpu")
@@ -149,11 +166,52 @@ class RefineGAN(BaseVocoder):
             )
 
     def to_device(self, device):
-        self.device = device
-        self.generator.to(device)
+        self.device = torch.device(device)
+        self.generator.to(self.device)
+        is_cuda = self.device.type == "cuda"
+        self._full_fp16 = (
+            self._optimization_enabled
+            and is_cuda
+            and bool(hparams.get("inference_vocoder_refinegan_full_fp16", False))
+        )
+        self._autocast = (
+            self._optimization_enabled
+            and is_cuda
+            and not self._full_fp16
+            and bool(hparams.get("inference_vocoder_refinegan_autocast", True))
+        )
+        self._chunking = (
+            self._optimization_enabled
+            and is_cuda
+            and bool(hparams.get("inference_vocoder_refinegan_chunking", True))
+            and self.generator.template_type == "comb"
+        )
+        if self._full_fp16:
+            self.generator.half()
+        else:
+            self.generator.float()
+        print(
+            "| vocoder optimization: RefineGAN "
+            f"autocast_fp16={self._autocast}, full_fp16={self._full_fp16}, "
+            f"chunking={self._chunking}, chunk_frames={self._chunk_frames}, "
+            f"overlap={self._chunk_overlap}"
+        )
 
     def get_device(self):
         return self.device
+
+    def get_optimization_info(self):
+        return {
+            "name": "RefineGAN",
+            "enabled": self._optimization_enabled and self.device.type == "cuda",
+            "autocast_fp16": self._autocast,
+            "full_fp16": self._full_fp16,
+            "weight_norm_removed": True,
+            "chunking": self._chunking,
+            "chunk_frames": self._chunk_frames,
+            "chunk_overlap": self._chunk_overlap,
+            "phase_continuity": self._chunking,
+        }
 
     def _prepare_mel(self, mel: torch.Tensor) -> torch.Tensor:
         mel = mel.to(self.device)
@@ -204,13 +262,76 @@ class RefineGAN(BaseVocoder):
             if hp_val is not None and hp_val != target:
                 print(f"Mismatch parameters: hparams['{hp_key}']={hp_val} != {target} (RefineGAN)")
 
+    def _run_generator(self, mel: torch.Tensor, f0: torch.Tensor, phase_offset=None):
+        context = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if self._autocast
+            else nullcontext()
+        )
+        with context:
+            return self.generator(mel, f0, phase_offset=phase_offset)
+
+    def _generate_chunked(self, mel: torch.Tensor, f0: torch.Tensor) -> torch.Tensor:
+        frames = int(mel.shape[-1])
+        hop = int(self.generator.hop_length)
+        total_samples = frames * hop
+
+        # Prefix phase is computed from the complete phrase.  Each chunk starts
+        # with the same oscillator phase it would have had without chunking.
+        f0_audio = F.interpolate(f0.float(), size=total_samples, mode="linear")
+        phase_prefix = torch.cat(
+            [
+                torch.zeros_like(f0_audio[..., :1]),
+                torch.cumsum(f0_audio / self.generator.sampling_rate, dim=2),
+            ],
+            dim=2,
+        )
+        output = torch.zeros(
+            mel.shape[0], 1, total_samples,
+            device=self.device, dtype=torch.float32,
+        )
+        weight = torch.zeros_like(output)
+
+        start = 0
+        while start < frames:
+            end = min(start + self._chunk_frames, frames)
+            sample_start = start * hop
+            sample_end = end * hop
+            phase_offset = phase_prefix[..., sample_start:sample_start + 1]
+            part = self._run_generator(
+                mel[..., start:end], f0[..., start:end], phase_offset=phase_offset
+            ).float()
+            part = part[..., :sample_end - sample_start]
+            window = torch.ones_like(part)
+            overlap_samples = min(self._chunk_overlap * hop, part.shape[-1])
+            if start > 0 and overlap_samples > 0:
+                window[..., :overlap_samples] = torch.linspace(
+                    0.0, 1.0, overlap_samples,
+                    device=self.device, dtype=window.dtype,
+                )
+            if end < frames and overlap_samples > 0:
+                window[..., -overlap_samples:] = torch.linspace(
+                    1.0, 0.0, overlap_samples,
+                    device=self.device, dtype=window.dtype,
+                )
+            output[..., sample_start:sample_end] += part * window
+            weight[..., sample_start:sample_end] += window
+            if end == frames:
+                break
+            start = end - self._chunk_overlap
+
+        return output / weight.clamp_min_(1e-6)
+
     def spec2wav_torch(self, mel, **kwargs):
         self._warn_mismatch()
         mel_t = self._prepare_mel(mel)
         f0 = self._prepare_f0(kwargs.get("f0"))
 
-        with torch.no_grad():
-            audio = self.generator(mel_t, f0)  # [B, 1, T]
+        with torch.inference_mode():
+            if self._chunking and mel_t.shape[-1] > self._chunk_frames:
+                audio = self._generate_chunked(mel_t, f0)
+            else:
+                audio = self._run_generator(mel_t, f0)
             audio = audio.squeeze(1).contiguous().view(-1)
         return audio
 
