@@ -13,6 +13,7 @@ from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
 from modules.fastspeech.tts_modules import LengthRegulator
 from modules.toplevel import DiffSingerAcoustic, ShallowDiffusionOutput
 from modules.vocoders.registry import VOCODERS
+from inference.optimization import apply_inference_math_mode, optimize_model_for_inference
 from utils import load_ckpt
 from utils.lora import inject_lora, load_lora_state_dict
 from utils.hparams import hparams
@@ -55,6 +56,9 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                     self.lang_map = json.load(f)
             self.model = self.build_model(ckpt_steps=ckpt_steps)
             self.lr = LengthRegulator().to(self.device)
+            self.inference_optimization = optimize_model_for_inference(
+                self.model, model_kind='acoustic', device=self.device
+            )
         if load_vocoder:
             self.vocoder = self.build_vocoder()
 
@@ -75,10 +79,16 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
             base_ckpt = lora_cfg.get('base_ckpt', None)
             if base_ckpt:
                 # Load base checkpoint non-strictly to tolerate LoRA params and shape diffs (e.g., spk_embed)
-                load_ckpt(model, base_ckpt, ckpt_steps=None, prefix_in_ckpt='model', strict=False, device=self.device)
+                load_ckpt(
+                    model, base_ckpt, ckpt_steps=None, prefix_in_ckpt='model',
+                    strict=False, device=self.device, prefer_inference=True
+                )
             else:
-                load_ckpt(model, hparams['work_dir'], ckpt_steps=ckpt_steps,
-                          prefix_in_ckpt='model', strict=False, device=self.device)
+                load_ckpt(
+                    model, hparams['work_dir'], ckpt_steps=ckpt_steps,
+                    prefix_in_ckpt='model', strict=False, device=self.device,
+                    prefer_inference=True
+                )
             # Load latest checkpoint from work_dir if present (full or LoRA-only)
             try:
                 import pathlib as _p
@@ -87,19 +97,25 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                 if latest:
                     try:
                         # Prefer loading full state dict (base + LoRA) non-strictly
-                        load_ckpt(model, pathlib.Path(latest), ckpt_steps=None,
-                                  prefix_in_ckpt='model', strict=False, device=self.device)
+                        load_ckpt(
+                            model, pathlib.Path(latest), ckpt_steps=None,
+                            prefix_in_ckpt='model', strict=False, device=self.device,
+                            prefer_inference=True
+                        )
                     except Exception:
                         # Fallback: only apply LoRA params if checkpoint is LoRA-only
-                        sd = torch.load(latest, map_location=self.device).get('state_dict', {})
+                        sd = torch.load(latest, map_location='cpu').get('state_dict', {})
                         load_lora_state_dict(model, sd, prefix='model', strict=False)
             except Exception as e:
                 print(f'| warn: load lora weights failed: {e}')
             # One more time to guarantee all parameters are on the correct device after loading
             model = model.to(self.device)
         else:
-            load_ckpt(model, hparams['work_dir'], ckpt_steps=ckpt_steps,
-                      prefix_in_ckpt='model', strict=True, device=self.device)
+            load_ckpt(
+                model, hparams['work_dir'], ckpt_steps=ckpt_steps,
+                prefix_in_ckpt='model', strict=True, device=self.device,
+                prefer_inference=True
+            )
         # Convert to target precision
         if self._precision_ctx is not None:
             model = self._precision_ctx.convert_model(model)
@@ -112,6 +128,13 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
             vocoder = VOCODERS[hparams['vocoder'].split('.')[-1]]()
         vocoder.to_device(self.device)
         return vocoder
+
+    def warmup_vocoder(self):
+        warmup = getattr(self.vocoder, 'warmup', None)
+        if warmup is None:
+            info = getattr(self.vocoder, 'get_optimization_info', None)
+            return info() if info is not None else None
+        return warmup()
 
     def preprocess_input(self, param, idx=0):
         """
@@ -250,8 +273,9 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
 
         return batch
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def forward_model(self, sample):
+        apply_inference_math_mode('acoustic', self.device)
         txt_tokens = sample['tokens']
         variances = {
             v_name: sample.get(v_name)
@@ -281,7 +305,7 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
             )
         return mel_pred.diff_out
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def run_vocoder(self, spec, **kwargs):
         y = self.vocoder.spec2wav_torch(spec, **kwargs)
         return y[None]

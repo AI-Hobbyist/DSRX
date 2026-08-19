@@ -1854,6 +1854,18 @@ Total number of DDPM steps.
 <tr><td align="center"><b>default</b></td><td>1000</td>
 </tbody></table>
 
+### use_artifact_embed
+
+Whether to condition the acoustic model on a binary recording-quality label. When enabled, each entry in `datasets` may set `artifact_level` to `0` for clean recordings or `1` for artifact-heavy recordings. Missing labels default to `0`, and exported inference always freezes the label to `0`.
+
+<table><tbody>
+<tr><td align="center"><b>visibility</b></td><td>acoustic</td>
+<tr><td align="center"><b>scope</b></td><td>nn, preprocessing, inference</td>
+<tr><td align="center"><b>customizability</b></td><td>recommended</td>
+<tr><td align="center"><b>type</b></td><td>boolean</td>
+<tr><td align="center"><b>default</b></td><td>false</td>
+</tbody></table>
+
 ### use_breathiness_embed
 
 Whether to accept and embed breathiness values into the model.

@@ -13,6 +13,7 @@ datasets:
     speaker: speaker1
     spk_id: 0
     language: zh
+    artifact_level: 0  # 0 = clean, 1 = artifact-heavy
     test_prefixes:
     - wav1
     - wav2
@@ -36,6 +37,7 @@ use_lang_id: false
 num_lang: 1
 use_spk_id: false
 num_spk: 1
+use_artifact_embed: false  # Enable to use dataset artifact_level labels.
 
 use_energy_embed: false
 use_breathiness_embed: false

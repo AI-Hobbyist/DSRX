@@ -19,6 +19,7 @@ from modules.fastspeech.tts_modules import (
     mel2ph_to_dur
 )
 from modules.toplevel import DiffSingerVariance
+from inference.optimization import apply_inference_math_mode, optimize_model_for_inference
 from utils import load_ckpt
 from utils.lora import inject_lora, load_lora_state_dict
 from utils.hparams import hparams
@@ -44,6 +45,9 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
             with open(lang_map_fn, 'r', encoding='utf8') as f:
                 self.lang_map = json.load(f)
         self.model: DiffSingerVariance = self.build_model(ckpt_steps=ckpt_steps)
+        self.inference_optimization = optimize_model_for_inference(
+            self.model, model_kind='variance', device=self.device
+        )
         self.lr = LengthRegulator()
         self.rr = RhythmRegulator()
         smooth_kernel_size = round(hparams['midi_smooth_width'] / self.timestep)
@@ -90,10 +94,16 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
             model = model.to(self.device)
             base_ckpt = lora_cfg.get('base_ckpt', None)
             if base_ckpt:
-                load_ckpt(model, base_ckpt, ckpt_steps=None, prefix_in_ckpt='model', strict=False, device=self.device)
+                load_ckpt(
+                    model, base_ckpt, ckpt_steps=None, prefix_in_ckpt='model',
+                    strict=False, device=self.device, prefer_inference=True
+                )
             else:
-                load_ckpt(model, hparams['work_dir'], ckpt_steps=ckpt_steps,
-                          prefix_in_ckpt='model', strict=False, device=self.device)
+                load_ckpt(
+                    model, hparams['work_dir'], ckpt_steps=ckpt_steps,
+                    prefix_in_ckpt='model', strict=False, device=self.device,
+                    prefer_inference=True
+                )
             # Load latest checkpoint (full or LoRA-only)
             try:
                 from utils.training_utils import get_latest_checkpoint_path
@@ -101,20 +111,26 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
                 latest = get_latest_checkpoint_path(_p.Path(hparams['work_dir']))
                 if latest:
                     try:
-                        load_ckpt(model, pathlib.Path(latest), ckpt_steps=None,
-                                  prefix_in_ckpt='model', strict=False, device=self.device)
+                        load_ckpt(
+                            model, pathlib.Path(latest), ckpt_steps=None,
+                            prefix_in_ckpt='model', strict=False, device=self.device,
+                            prefer_inference=True
+                        )
                     except Exception:
-                        sd = torch.load(latest, map_location=self.device).get('state_dict', {})
+                        sd = torch.load(latest, map_location='cpu').get('state_dict', {})
                         load_lora_state_dict(model, sd, prefix='model', strict=False)
             except Exception as e:
                 print(f'| warn: load lora weights failed: {e}')
             model = model.to(self.device)
         else:
-            load_ckpt(model, hparams['work_dir'], ckpt_steps=ckpt_steps,
-                      prefix_in_ckpt='model', strict=True, device=self.device)
+            load_ckpt(
+                model, hparams['work_dir'], ckpt_steps=ckpt_steps,
+                prefix_in_ckpt='model', strict=True, device=self.device,
+                prefer_inference=True
+            )
         return model
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def preprocess_input(
             self, param, idx=0,
             load_dur: bool = False,
@@ -325,8 +341,9 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
 
         return batch
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def forward_model(self, sample):
+        apply_inference_math_mode('variance', self.device)
         txt_tokens = sample['tokens']
         midi = sample['midi']
         ph2word = sample['ph2word']

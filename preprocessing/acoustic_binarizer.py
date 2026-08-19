@@ -35,6 +35,7 @@ from utils.hparams import hparams
 os.environ["OMP_NUM_THREADS"] = "1"
 ACOUSTIC_ITEM_ATTRIBUTES = [
     'spk_id',
+    'artifact_level',
     'mel',
     'languages',
     'tokens',
@@ -58,6 +59,15 @@ tension_smooth: SinusoidalSmoothingConv1d = None
 class AcousticBinarizer(BaseBinarizer):
     def __init__(self):
         super().__init__(data_attrs=ACOUSTIC_ITEM_ATTRIBUTES)
+        self.artifact_levels = []
+        for ds_id, dataset in enumerate(self.datasets):
+            artifact_level = int(dataset.get('artifact_level', 0))
+            if artifact_level not in (0, 1):
+                raise ValueError(
+                    f"Invalid artifact_level={artifact_level} for dataset #{ds_id}. "
+                    "Only 0 (clean) and 1 (artifact) are supported."
+                )
+            self.artifact_levels.append(artifact_level)
         self.lr = LengthRegulator()
         self.need_energy = hparams['use_energy_embed']
         self.need_breathiness = hparams['use_breathiness_embed']
@@ -77,6 +87,7 @@ class AcousticBinarizer(BaseBinarizer):
                     temp_dict = {
                         'wav_fn': str(raw_data_dir / 'wavs' / f'{item_name}.wav'),
                         'spk_id': self.spk_map[spk],
+                        'artifact_level': self.artifact_levels[ds_id],
                         'spk_name': spk,
                         'lang_seq': [
                             (
@@ -116,6 +127,7 @@ class AcousticBinarizer(BaseBinarizer):
             'name': item_name,
             'wav_fn': meta_data['wav_fn'],
             'spk_id': meta_data['spk_id'],
+            'artifact_level': meta_data['artifact_level'],
             'spk_name': meta_data['spk_name'],
             'seconds': seconds,
             'length': length,

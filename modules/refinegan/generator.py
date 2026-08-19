@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import torch
@@ -173,7 +173,11 @@ class CombToothGen(nn.Module):
         self.voiced_threshold = voiced_threshold
 
     @torch.no_grad()
-    def forward(self, f0: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        f0: torch.Tensor,
+        phase_offset: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Args:
             f0 (torch.Tensor): [B, 1, T]
@@ -183,6 +187,8 @@ class CombToothGen(nn.Module):
         """
 
         x = torch.cumsum(f0 / self.sampling_rate, axis=2)
+        if phase_offset is not None:
+            x = x + phase_offset.to(device=x.device, dtype=x.dtype)
         x = x - torch.round(x)
         combtooth = torch.sinc(self.sampling_rate * x / (f0 + 1e-3)) * self.wave_amp
 
@@ -500,7 +506,12 @@ class RefineGANGenerator(nn.Module):
         for block in self.upsample_conv_blocks:
             block.remove_weight_norm()
 
-    def forward(self, mel: torch.Tensor, f0: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        mel: torch.Tensor,
+        f0: torch.Tensor,
+        phase_offset: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Args:
             mel (torch.Tensor): [B, mel_bin, T]
@@ -513,9 +524,13 @@ class RefineGANGenerator(nn.Module):
         f0 = F.interpolate(f0, size=mel.shape[-1] * self.hop_length, mode="linear")
         if self.template_type == "pulse":
             template = self.template_gen(f0, mel, self.hop_length)
+        elif self.template_type == "comb":
+            template = self.template_gen(f0, phase_offset=phase_offset)
         else:
             template = self.template_gen(f0)
 
+        template = template.to(dtype=self.template_conv.weight.dtype)
+        mel = mel.to(dtype=self.mel_conv.weight.dtype)
         x = self.template_conv(template)
 
         downs = []

@@ -166,7 +166,7 @@ def filter_kwargs(dict_to_filter, kwarg_obj):
 def load_ckpt(
         cur_model, ckpt_base_dir, ckpt_steps=None,
         prefix_in_ckpt='model', ignored_prefixes=None, key_in_ckpt='state_dict',
-        strict=True, device='cpu'
+        strict=True, device='cpu', prefer_inference=False
 ):
     if ignored_prefixes is None:
         # NOTICE: this is for compatibility with old checkpoints which have duplicate txt_embed layer in them.
@@ -175,21 +175,41 @@ def load_ckpt(
         ckpt_base_dir = pathlib.Path(ckpt_base_dir)
     if ckpt_base_dir.is_file():
         checkpoint_path = [ckpt_base_dir]
+        if prefer_inference and not ckpt_base_dir.name.endswith('.infer.ckpt'):
+            inference_path = ckpt_base_dir.with_suffix('.infer.ckpt')
+            if inference_path.is_file():
+                checkpoint_path = [inference_path]
     elif ckpt_steps is not None:
-        checkpoint_path = [ckpt_base_dir / f'model_ckpt_steps_{int(ckpt_steps)}.ckpt']
+        full_path = ckpt_base_dir / f'model_ckpt_steps_{int(ckpt_steps)}.ckpt'
+        inference_path = ckpt_base_dir / f'model_ckpt_steps_{int(ckpt_steps)}.infer.ckpt'
+        checkpoint_path = [
+            inference_path if prefer_inference and inference_path.is_file() else full_path
+        ]
     else:
         base_dir = ckpt_base_dir
+        pattern = (
+            r'model_ckpt_steps_\d+(?:\.infer)?\.ckpt'
+            if prefer_inference else r'model_ckpt_steps_\d+\.ckpt'
+        )
+        candidates = [
+            ckpt_file
+            for ckpt_file in base_dir.iterdir()
+            if ckpt_file.is_file() and re.fullmatch(pattern, ckpt_file.name)
+        ]
         checkpoint_path = sorted(
-            [
-                ckpt_file
-                for ckpt_file in base_dir.iterdir()
-                if ckpt_file.is_file() and re.fullmatch(r'model_ckpt_steps_\d+\.ckpt', ckpt_file.name)
-            ],
-            key=lambda x: int(re.search(r'\d+', x.name).group(0))
+            candidates,
+            key=lambda x: (
+                int(re.search(r'\d+', x.name).group(0)),
+                int(prefer_inference and x.name.endswith('.infer.ckpt'))
+            )
         )
     assert len(checkpoint_path) > 0, f'| ckpt not found in {ckpt_base_dir}.'
     checkpoint_path = checkpoint_path[-1]
-    ckpt_loaded = torch.load(checkpoint_path, map_location=device)
+    # Loading a training checkpoint directly onto CUDA also places optimizer
+    # tensors on the GPU temporarily.  Inference loads through CPU so only the
+    # selected state_dict is copied to the already allocated model.
+    load_device = 'cpu' if prefer_inference and str(device).startswith('cuda') else device
+    ckpt_loaded = torch.load(checkpoint_path, map_location=load_device)
     if isinstance(cur_model, CategorizedModule):
         cur_model.check_category(ckpt_loaded.get('category'))
     if key_in_ckpt is None:
