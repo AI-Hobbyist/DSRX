@@ -87,6 +87,26 @@ def validate_common(config: dict) -> None:
     assert all(".backbone." not in target for target in config["lora"]["target_modules"])
 
 
+def validate_acoustic_optimization(config: dict) -> None:
+    assert config["optimizer_args"]["lr"] == 0.0003
+    scheduler = config["lr_scheduler_args"]
+    assert set(scheduler) == {"scheduler_cls", "schedulers", "milestones"}
+    assert scheduler["scheduler_cls"] == "torch.optim.lr_scheduler.SequentialLR"
+    assert scheduler["milestones"] == [1000]
+    warmup, decay = scheduler["schedulers"]
+    assert warmup == {
+        "cls": "torch.optim.lr_scheduler.LinearLR",
+        "start_factor": 0.01,
+        "end_factor": 1.0,
+        "total_iters": 1000,
+    }
+    assert decay == {
+        "cls": "torch.optim.lr_scheduler.StepLR",
+        "step_size": 5000,
+        "gamma": 0.8,
+    }
+
+
 def main() -> None:
     acoustic = load_config(ROOT / "configs/dit/config_acoustic.yaml")
     variance = load_config(ROOT / "configs/dit/config_variance.yaml")
@@ -101,6 +121,7 @@ def main() -> None:
     validate_common(acoustic)
     assert acoustic["backbone_type"] == "dit"
     validate_dit_args("acoustic", acoustic["backbone_args"], 384)
+    validate_acoustic_optimization(acoustic)
 
     validate_common(variance)
     pitch = variance["pitch_prediction_args"]
@@ -111,6 +132,7 @@ def main() -> None:
     validate_dit_args("variances", variances["backbone_args"], 256)
 
     assert acoustic_4090["backbone_args"] == acoustic["backbone_args"]
+    validate_acoustic_optimization(acoustic_4090)
     assert acoustic_4090["max_batch_size"] == 8
     assert acoustic_4090["max_batch_frames"] == 6144
     assert acoustic_4090["max_sample_frames"] == 768

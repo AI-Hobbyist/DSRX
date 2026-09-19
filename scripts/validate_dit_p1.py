@@ -13,6 +13,7 @@ from modules.backbones.dit import DiT
 from modules.core.ddpm import GaussianDiffusion
 from modules.core.reflow import RectifiedFlow
 from modules.losses import DiffusionLoss, RectifiedFlowLoss
+from modules.optimizer.muon import Muon_AdamW, get_params_for_muon
 from basics.base_dataset import validate_sample_lengths
 from utils.lora import inject_lora, mark_only_lora_as_trainable
 from utils.hparams import hparams
@@ -102,6 +103,63 @@ def validate_checkpoint_gradients() -> None:
     output = model(spec, torch.tensor([1.0]), cond, valid_mask=torch.ones(1, 3, dtype=torch.bool))
     output.sum().backward()
     assert model.blocks[0].attn.qkv.weight.grad is not None
+
+
+def validate_muon_parameter_partition() -> None:
+    hparams.clear()
+    hparams.update({"hidden_size": 8})
+    model = DiT(
+        4,
+        1,
+        num_layers=2,
+        num_channels=8,
+        num_heads=2,
+        mlp_ratio=2,
+        time_embed_dim=8,
+        use_gradient_checkpointing=False,
+    )
+    muon_param_ids = {id(parameter) for parameter in get_params_for_muon(model)}
+
+    assert id(model.blocks[0].attn.qkv.weight) in muon_param_ids
+    assert id(model.blocks[0].mlp.fc1.weight) in muon_param_ids
+    assert id(model.output_proj.weight) not in muon_param_ids
+    assert id(model.final_modulation[1].weight) not in muon_param_ids
+    assert all(
+        id(block.adaLN_modulation[1].weight) not in muon_param_ids
+        for block in model.blocks
+    )
+
+    optimizer = Muon_AdamW(model)
+    optimizer_param_ids = [
+        {
+            id(parameter)
+            for group in inner_optimizer.param_groups
+            for parameter in group['params']
+        }
+        for inner_optimizer in optimizer.optimizers
+    ]
+    assert id(model.blocks[0].attn.qkv.weight) in optimizer_param_ids[0]
+    assert id(model.output_proj.weight) in optimizer_param_ids[1]
+    assert id(model.final_modulation[1].weight) in optimizer_param_ids[1]
+    assert all(
+        id(block.adaLN_modulation[1].weight) in optimizer_param_ids[1]
+        for block in model.blocks
+    )
+
+    spec = torch.randn(2, 1, 4, 5)
+    cond = torch.randn(2, 8, 5)
+    target = torch.randn_like(spec)
+    output = model(
+        spec,
+        torch.tensor([100.0, 900.0]),
+        cond,
+        valid_mask=torch.ones(2, 5, dtype=torch.bool),
+    )
+    (output - target).square().mean().backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+    assert torch.count_nonzero(model.output_proj.weight) > 0
+    assert all(torch.isfinite(parameter).all() for parameter in model.parameters())
 
 
 def validate_factory_and_legacy_dispatch() -> None:
@@ -296,6 +354,7 @@ def main() -> None:
     torch.manual_seed(1234)
     validate_shapes_and_masks()
     validate_checkpoint_gradients()
+    validate_muon_parameter_partition()
     validate_factory_and_legacy_dispatch()
     validate_core_mask_propagation()
     validate_masked_loss_reduction()

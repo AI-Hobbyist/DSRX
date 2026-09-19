@@ -2,3 +2,6 @@
 # merged key by key, so setting the inherited mapping to null first prevents
 # LYNXNet-specific arguments from leaking into the DiT contract.
 backbone_args: null
+
+# Rebuild the DiT learning-rate schedule without inherited StepLR fields.
+lr_scheduler_args: null

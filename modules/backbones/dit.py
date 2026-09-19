@@ -81,6 +81,7 @@ class DiTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim, eps=layer_norm_eps, elementwise_affine=False)
         self.mlp = DiTMLP(dim, mlp_ratio, dropout=mlp_dropout)
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
+        self.adaLN_modulation[1].use_muon = False
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
@@ -157,6 +158,8 @@ class DiT(nn.Module):
         )
         self.final_modulation = nn.Sequential(nn.SiLU(), nn.Linear(num_channels, num_channels * 2))
         self.output_proj = nn.Linear(num_channels, input_dims)
+        self.final_modulation[1].use_muon = False
+        self.output_proj.use_muon = False
         nn.init.zeros_(self.final_modulation[1].weight)
         nn.init.zeros_(self.final_modulation[1].bias)
         nn.init.zeros_(self.output_proj.weight)

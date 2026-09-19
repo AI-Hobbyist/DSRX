@@ -41,6 +41,20 @@ max_sample_frames: 768
 accumulate_grad_batches: 8
 clip_grad_norm: 1.0
 
+optimizer_args:
+  lr: 0.0003
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.SequentialLR
+  schedulers:
+    - cls: torch.optim.lr_scheduler.LinearLR
+      start_factor: 0.01
+      end_factor: 1.0
+      total_iters: 1000
+    - cls: torch.optim.lr_scheduler.StepLR
+      step_size: 5000
+      gamma: 0.8
+  milestones: [1000]
+
 # Native inference keeps mask-aware DiT eager and only warms bounded lengths.
 inference_max_frames: 2048
 inference_dit_warmup_frames: [128, 512, 768, 1024]
