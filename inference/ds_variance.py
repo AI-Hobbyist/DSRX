@@ -19,9 +19,18 @@ from modules.fastspeech.tts_modules import (
     mel2ph_to_dur
 )
 from modules.toplevel import DiffSingerVariance
-from inference.optimization import apply_inference_math_mode, optimize_model_for_inference
+from inference.optimization import (
+    apply_inference_math_mode,
+    optimize_model_for_inference,
+    validate_inference_length,
+)
 from utils import load_ckpt
-from utils.lora import inject_lora, load_lora_state_dict
+from utils.lora import (
+    inject_lora,
+    load_dit_lora_for_inference,
+    load_lora_state_dict,
+    uses_dit_backend,
+)
 from utils.hparams import hparams
 from utils.infer_utils import resample_align_curve
 from utils.phoneme_utils import load_phoneme_dictionary
@@ -87,6 +96,12 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+            if uses_dit_backend(hparams):
+                load_dit_lora_for_inference(
+                    model, lora_cfg, work_dir=hparams['work_dir'],
+                    device=self.device
+                )
+                return model.to(self.device)
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))
             targets = lora_cfg.get('target_modules', ['linear'])
@@ -199,6 +214,7 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
         note_dur = torch.diff(note_acc, dim=1, prepend=note_acc.new_zeros(1, 1))
         mel2note = self.lr(note_dur)  # [B=1, T_s]
         T_s = mel2note.shape[1]
+        validate_inference_length(T_s, context='variance')
 
         summary['words'] = T_w
         summary['notes'] = T_n

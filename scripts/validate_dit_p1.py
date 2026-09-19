@@ -1,0 +1,308 @@
+import sys
+from pathlib import Path
+
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from modules.backbones import build_backbone, run_backbone
+from modules.backbones.dit import DiT
+from modules.core.ddpm import GaussianDiffusion
+from modules.core.reflow import RectifiedFlow
+from modules.losses import DiffusionLoss, RectifiedFlowLoss
+from basics.base_dataset import validate_sample_lengths
+from utils.lora import inject_lora, mark_only_lora_as_trainable
+from utils.hparams import hparams
+
+
+def expect_error(error_type, fn, message: str) -> None:
+    try:
+        fn()
+    except error_type:
+        return
+    raise AssertionError(message)
+
+
+def build_default_dit(use_gradient_checkpointing: bool = False) -> DiT:
+    hparams.clear()
+    hparams.update({"hidden_size": 256})
+    return DiT(
+        128,
+        1,
+        num_layers=8,
+        num_channels=384,
+        num_heads=6,
+        mlp_ratio=4,
+        time_embed_dim=256,
+        use_gradient_checkpointing=use_gradient_checkpointing,
+    )
+
+
+def validate_shapes_and_masks() -> None:
+    hparams.clear()
+    hparams.update({"hidden_size": 8})
+    model = DiT(
+        3,
+        2,
+        num_layers=2,
+        num_channels=8,
+        num_heads=2,
+        mlp_ratio=2,
+        time_embed_dim=8,
+        use_gradient_checkpointing=False,
+    ).eval()
+
+    for batch, frames in ((1, 1), (2, 5)):
+        spec = torch.randn(batch, 2, 3, frames)
+        step = torch.arange(batch, dtype=torch.float32)
+        cond = torch.randn(batch, 8, frames)
+        mask = torch.ones(batch, frames, dtype=torch.bool)
+        output = model(spec, step, cond, valid_mask=mask)
+        assert output.shape == spec.shape
+        assert torch.isfinite(output).all()
+
+    spec = torch.randn(2, 2, 3, 5)
+    cond = torch.randn(2, 8, 5)
+    step = torch.tensor([[1.0], [2.0]])
+    mask = torch.tensor([[True, True, True, False, False], [True] * 5])
+    altered_spec = spec.clone()
+    altered_cond = cond.clone()
+    altered_spec[0, :, :, 3:] = 1000
+    altered_cond[0, :, 3:] = -1000
+    output = model(spec, step, cond, valid_mask=mask)
+    altered_output = model(altered_spec, step, altered_cond, valid_mask=mask)
+    torch.testing.assert_close(output[0, :, :, :3], altered_output[0, :, :, :3])
+    assert torch.count_nonzero(output[0, :, :, 3:]) == 0
+
+    expect_error(
+        ValueError,
+        lambda: model(spec, step, cond, valid_mask=torch.zeros(2, 5, dtype=torch.bool)),
+        "All-empty masks must be rejected.",
+    )
+
+
+def validate_checkpoint_gradients() -> None:
+    hparams.clear()
+    hparams.update({"hidden_size": 8})
+    model = DiT(
+        4,
+        1,
+        num_layers=1,
+        num_channels=8,
+        num_heads=2,
+        mlp_ratio=2,
+        time_embed_dim=8,
+        use_gradient_checkpointing=True,
+    ).train()
+    spec = torch.randn(1, 1, 4, 3)
+    cond = torch.randn(1, 8, 3)
+    output = model(spec, torch.tensor([1.0]), cond, valid_mask=torch.ones(1, 3, dtype=torch.bool))
+    output.sum().backward()
+    assert model.blocks[0].attn.qkv.weight.grad is not None
+
+
+def validate_factory_and_legacy_dispatch() -> None:
+    hparams.clear()
+    hparams.update({"hidden_size": 256})
+    model = build_backbone(
+        128,
+        1,
+        "dit",
+        {
+            "num_layers": 8,
+            "num_channels": 384,
+            "num_heads": 6,
+            "mlp_ratio": 4,
+            "time_embed_dim": 256,
+            "patch_size": 1,
+            "rope_base": 10000.0,
+            "layer_norm_eps": 1e-6,
+            "attention_dropout": 0.0,
+            "mlp_dropout": 0.0,
+            "use_gradient_checkpointing": True,
+        },
+    )
+    assert sum(parameter.numel() for parameter in model.parameters()) == 22_019_456
+
+    expect_error(
+        ValueError,
+        lambda: build_backbone(128, 1, "dit", {"num_layers": 1, "unknown": True}),
+        "Unknown DiT arguments must be rejected.",
+    )
+
+    class LegacyBackbone(nn.Module):
+        def forward(self, spec, diffusion_step, cond):
+            return spec + diffusion_step[:, None, None, None] * 0 + cond[:, None, :1, :] * 0
+
+    spec = torch.randn(1, 1, 2, 3)
+    output = run_backbone(
+        LegacyBackbone(),
+        spec,
+        torch.zeros(1),
+        torch.randn(1, 4, 3),
+        valid_mask=torch.ones(1, 3, dtype=torch.bool),
+    )
+    torch.testing.assert_close(output, spec)
+
+
+def validate_core_mask_propagation() -> None:
+    hparams.clear()
+    hparams.update({
+        "hidden_size": 8,
+        "schedule_type": "linear",
+        "use_shallow_diffusion": False,
+        "sampling_algorithm": "euler",
+        "sampling_steps": 1,
+        "diff_speedup": 1,
+        "infer": False,
+    })
+    backbone_args = {
+        "num_layers": 1,
+        "num_channels": 8,
+        "num_heads": 2,
+        "mlp_ratio": 2,
+        "time_embed_dim": 8,
+        "use_gradient_checkpointing": False,
+    }
+    condition = torch.randn(2, 5, 8)
+    target = torch.randn(2, 5, 4)
+    mask = torch.tensor([[True, True, True, False, False], [True] * 5])
+
+    ddpm = GaussianDiffusion(
+        4,
+        timesteps=4,
+        k_step=4,
+        backbone_type="dit",
+        backbone_args=backbone_args,
+        spec_min=[-1.0],
+        spec_max=[1.0],
+    )
+    prediction, noise = ddpm(condition, gt_spec=target, infer=False, valid_mask=mask)
+    assert prediction.shape == noise.shape == (2, 1, 4, 5)
+    assert torch.count_nonzero(prediction[0, :, :, 3:]) == 0
+
+    reflow = RectifiedFlow(
+        4,
+        time_scale_factor=1000,
+        backbone_type="dit",
+        backbone_args=backbone_args,
+        spec_min=[-1.0],
+        spec_max=[1.0],
+    )
+    velocity, target_velocity, time = reflow(
+        condition, gt_spec=target, infer=False, valid_mask=mask
+    )
+    assert velocity.shape == target_velocity.shape == (2, 1, 4, 5)
+    assert time.shape == (2,)
+    assert torch.count_nonzero(velocity[0, :, :, 3:]) == 0
+
+    x = torch.randn(2, 1, 4, 5)
+    t = torch.tensor([0.2, 0.4])
+    cond = condition.transpose(1, 2)
+    for sampler in (reflow.sample_euler, reflow.sample_rk2, reflow.sample_rk4, reflow.sample_rk5):
+        sampled, _ = sampler(x.clone(), t.clone(), 0.1, cond, valid_mask=mask)
+        assert sampled.shape == x.shape
+        assert torch.isfinite(sampled).all()
+
+
+def validate_masked_loss_reduction() -> None:
+    prediction = torch.tensor([[[[1.0, 2.0]]]])
+    target = torch.zeros_like(prediction)
+    mask = torch.ones(1, 2, 1)
+    padded_prediction = F.pad(prediction, (0, 3), value=1000.0)
+    padded_target = torch.zeros_like(padded_prediction)
+    padded_mask = F.pad(mask, (0, 0, 0, 3), value=0.0)
+
+    diffusion_loss = DiffusionLoss("l2")
+    torch.testing.assert_close(
+        diffusion_loss(prediction, target, non_padding=mask),
+        diffusion_loss(padded_prediction, padded_target, non_padding=padded_mask),
+    )
+    reflow_loss = RectifiedFlowLoss("l2", log_norm=False)
+    time = torch.tensor([0.5])
+    torch.testing.assert_close(
+        reflow_loss(prediction, target, time, non_padding=mask),
+        reflow_loss(padded_prediction, padded_target, time, non_padding=padded_mask),
+    )
+
+
+def validate_lora_contract() -> None:
+    class AcousticModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.diffusion = nn.Module()
+            self.diffusion.velocity_fn = build_default_dit(use_gradient_checkpointing=True)
+
+    model = AcousticModel()
+    target_modules = [
+        r'^diffusion\.(denoise_fn|velocity_fn)\.blocks\.[0-9]+\.attn\.(qkv|proj)$',
+        r'^diffusion\.(denoise_fn|velocity_fn)\.blocks\.[0-9]+\.mlp\.(fc1|fc2)$',
+    ]
+    matched_modules = inject_lora(
+        model, rank=8, alpha=16, target_modules=target_modules, require_match=True
+    )
+    assert len(matched_modules) == 32
+    mark_only_lora_as_trainable(model)
+    trainable_params = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
+    assert trainable_params == 393_216
+    assert all(
+        parameter.requires_grad == ('lora_A' in name or 'lora_B' in name)
+        for name, parameter in model.named_parameters()
+    )
+
+    dit = model.diffusion.velocity_fn.train()
+    with torch.no_grad():
+        for block in dit.blocks:
+            block.adaLN_modulation[1].bias.normal_()
+        dit.final_modulation[1].bias.normal_()
+        dit.output_proj.weight.normal_()
+    output = dit(
+        torch.randn(1, 1, 128, 3),
+        torch.tensor([1.0]),
+        torch.randn(1, 256, 3),
+        valid_mask=torch.ones(1, 3, dtype=torch.bool),
+    )
+    output.square().mean().backward()
+    assert any(
+        parameter.grad is not None and torch.count_nonzero(parameter.grad) > 0
+        for name, parameter in model.named_parameters() if name.endswith('lora_B')
+    )
+
+    try:
+        inject_lora(
+            build_default_dit(), target_modules=[r'^missing$'], require_match=True
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('Strict DiT LoRA injection accepted zero matched modules.')
+
+
+def validate_length_policy() -> None:
+    validate_sample_lengths([1, 767, 768], 768)
+    expect_error(
+        ValueError,
+        lambda: validate_sample_lengths([768, 769], 768),
+        'Samples beyond the DiT frame budget must be rejected before batching.',
+    )
+
+
+def main() -> None:
+    torch.manual_seed(1234)
+    validate_shapes_and_masks()
+    validate_checkpoint_gradients()
+    validate_factory_and_legacy_dispatch()
+    validate_core_mask_propagation()
+    validate_masked_loss_reduction()
+    validate_lora_contract()
+    validate_length_policy()
+    print("DiT P1 validation passed.")
+
+
+if __name__ == "__main__":
+    main()

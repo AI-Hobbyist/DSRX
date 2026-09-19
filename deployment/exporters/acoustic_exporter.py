@@ -8,6 +8,8 @@ import torch
 import yaml
 
 from basics.base_exporter import BaseExporter
+from deployment.exporters.onnx_export import export_onnx
+from deployment.modules.dit import compile_backbone_for_onnx
 from deployment.modules.toplevel import DiffSingerAcousticONNX
 from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
 from utils import load_ckpt, onnx_helper, remove_suffix
@@ -85,7 +87,10 @@ class DiffSingerAcousticExporter(BaseExporter):
                 self.model.fs2.register_buffer('frozen_spk_embed', self._perform_spk_mix(self.freeze_spk[1]))
 
     def build_model(self) -> DiffSingerAcousticONNX:
-        from utils.lora import inject_lora, load_lora_state_dict, merge_lora_into_model
+        from utils.lora import (
+            inject_lora, load_dit_lora_for_export, load_lora_state_dict,
+            merge_lora_into_model, uses_dit_backend
+        )
         model = DiffSingerAcousticONNX(
             vocab_size=len(self.phoneme_dictionary),
             out_dims=hparams['audio_num_mel_bins'],
@@ -96,33 +101,38 @@ class DiffSingerAcousticExporter(BaseExporter):
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
-            rank = int(lora_cfg.get('rank', 8))
-            alpha = int(lora_cfg.get('alpha', 16))
-            targets = lora_cfg.get('target_modules', ['linear'])
-            inject_lora(model, rank=rank, alpha=alpha, target_modules=targets)
-            model = model.to(self.device)
-            base_ckpt = lora_cfg.get('base_ckpt', None)
-            if base_ckpt:
-                load_ckpt(model, base_ckpt, ckpt_steps=None, prefix_in_ckpt='model', strict=False, device=self.device)
+            if uses_dit_backend(hparams):
+                load_dit_lora_for_export(
+                    model, lora_cfg, work_dir=hparams['work_dir'],
+                    ckpt_steps=self.ckpt_steps, device=self.device
+                )
             else:
-                load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
-                          prefix_in_ckpt='model', strict=False, device=self.device)
-            # Load latest checkpoint (prefer full weights; fallback to LoRA-only)
-            from utils.training_utils import get_latest_checkpoint_path
-            latest = get_latest_checkpoint_path(Path(hparams['work_dir']))
-            if latest:
-                try:
-                    load_ckpt(model, Path(latest), ckpt_steps=None,
+                rank = int(lora_cfg.get('rank', 8))
+                alpha = int(lora_cfg.get('alpha', 16))
+                targets = lora_cfg.get('target_modules', ['linear'])
+                inject_lora(model, rank=rank, alpha=alpha, target_modules=targets)
+                model = model.to(self.device)
+                base_ckpt = lora_cfg.get('base_ckpt', None)
+                if base_ckpt:
+                    load_ckpt(model, base_ckpt, ckpt_steps=None, prefix_in_ckpt='model', strict=False, device=self.device)
+                else:
+                    load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
                               prefix_in_ckpt='model', strict=False, device=self.device)
-                except Exception:
-                    sd = torch.load(latest, map_location=self.device).get('state_dict', {})
-                    load_lora_state_dict(model, sd, prefix='model', strict=False)
+                from utils.training_utils import get_latest_checkpoint_path
+                latest = get_latest_checkpoint_path(Path(hparams['work_dir']))
+                if latest:
+                    try:
+                        load_ckpt(model, Path(latest), ckpt_steps=None,
+                                  prefix_in_ckpt='model', strict=False, device=self.device)
+                    except Exception:
+                        sd = torch.load(latest, map_location=self.device).get('state_dict', {})
+                        load_lora_state_dict(model, sd, prefix='model', strict=False)
             model = model.to(self.device)
             if lora_cfg.get('merge_before_export', True):
                 merge_lora_into_model(model)
         else:
             load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
-                      prefix_in_ckpt='model', strict=False, device=self.device)
+                      prefix_in_ckpt='model', strict=uses_dit_backend(hparams), device=self.device)
         return model
 
     def export(self, path: Path):
@@ -270,7 +280,7 @@ class DiffSingerAcousticExporter(BaseExporter):
                 1: 'n_frames'
             }
         print(f'Exporting {self.fs2_aux_class_name}...')
-        torch.onnx.export(
+        export_onnx(
             self.model.view_as_fs2_aux(),
             arguments,
             self.fs2_aux_cache_path,
@@ -298,7 +308,7 @@ class DiffSingerAcousticExporter(BaseExporter):
         else:
             raise ValueError(f'Invalid diffusion type: {self.model.diffusion_type}')
         major_mel_decoder.diffusion.set_backbone(
-            torch.jit.trace(
+            compile_backbone_for_onnx(
                 major_mel_decoder.diffusion.backbone,
                 (
                     noise,
@@ -329,7 +339,7 @@ class DiffSingerAcousticExporter(BaseExporter):
 
         # PyTorch ONNX export for GaussianDiffusion
         print(f'Exporting {self.diffusion_class_name}...')
-        torch.onnx.export(
+        export_onnx(
             major_mel_decoder,
             (
                 *diffusion_inputs,

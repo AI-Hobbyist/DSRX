@@ -1,0 +1,58 @@
+base_config:
+  - configs/original/acoustic.yaml
+  - configs/dit/_reset_acoustic_backbone.yaml
+
+# P0 freezes this contract. The backend itself is implemented in P1.
+dit_contract:
+  version: 1
+  valid_mask_source: mel2ph
+  valid_mask_true_is_valid: true
+  padded_batches_require_mask: true
+
+backbone_type: dit
+backbone_args:
+  num_layers: 8
+  num_channels: 384
+  num_heads: 6
+  mlp_ratio: 4
+  time_embed_dim: 256
+  patch_size: 1
+  rope_base: 10000.0
+  layer_norm_eps: 0.000001
+  attention_dropout: 0.0
+  mlp_dropout: 0.0
+  use_gradient_checkpointing: true
+
+diffusion_type: reflow
+sampling_algorithm: euler
+sampling_steps: 20
+time_scale_factor: 1000
+use_shallow_diffusion: true
+T_start: 0.4
+T_start_infer: 0.4
+
+# Conservative 8 GiB starting point; the data pipeline must still enforce the
+# per-sample length limit in P1.
+max_batch_frames: 768
+max_batch_size: 1
+max_val_batch_frames: 768
+max_val_batch_size: 1
+max_sample_frames: 768
+accumulate_grad_batches: 8
+clip_grad_norm: 1.0
+
+# Native inference keeps mask-aware DiT eager and only warms bounded lengths.
+inference_max_frames: 2048
+inference_dit_warmup_frames: [128, 512, 768, 1024]
+
+# Never inherit the legacy acoustic config's enabled LoRA or local base path.
+lora:
+  enabled: false
+  rank: 8
+  alpha: 16
+  target_modules:
+    - '^diffusion\.(denoise_fn|velocity_fn)\.blocks\.[0-9]+\.attn\.(qkv|proj)$'
+    - '^diffusion\.(denoise_fn|velocity_fn)\.blocks\.[0-9]+\.mlp\.(fc1|fc2)$'
+  base_ckpt: null
+  train_bias: false
+  merge_before_export: true

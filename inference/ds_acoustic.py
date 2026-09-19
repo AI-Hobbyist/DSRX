@@ -12,9 +12,18 @@ from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
 from modules.fastspeech.tts_modules import LengthRegulator
 from modules.toplevel import DiffSingerAcoustic, ShallowDiffusionOutput
 from modules.vocoders.registry import VOCODERS
-from inference.optimization import apply_inference_math_mode, optimize_model_for_inference
+from inference.optimization import (
+    apply_inference_math_mode,
+    optimize_model_for_inference,
+    validate_inference_length,
+)
 from utils import load_ckpt
-from utils.lora import inject_lora, load_lora_state_dict
+from utils.lora import (
+    inject_lora,
+    load_dit_lora_for_inference,
+    load_lora_state_dict,
+    uses_dit_backend,
+)
 from utils.hparams import hparams
 from utils.infer_utils import cross_fade, resample_align_curve, save_wav
 from utils.phoneme_utils import load_phoneme_dictionary
@@ -62,6 +71,12 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+            if uses_dit_backend(hparams):
+                load_dit_lora_for_inference(
+                    model, lora_cfg, work_dir=hparams['work_dir'],
+                    device=self.device
+                )
+                return model.to(self.device)
             # Inject LoRA
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))
@@ -165,6 +180,7 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
         mel2ph = self.lr(durations, txt_tokens == 0)  # => [B=1, T]
         batch['mel2ph'] = mel2ph
         length = mel2ph.size(1)  # => T
+        validate_inference_length(length, context='acoustic')
 
         summary['tokens'] = txt_tokens.size(1)
         summary['frames'] = length

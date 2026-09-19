@@ -1,0 +1,183 @@
+baseline:
+  branch: DSRX_DiT
+  commit: caa651f0a68d59c572915dc3dae2994d288a5f09
+  legacy_backbones: [wavenet, lynxnet, lynxnet2]
+  checkpoint_config: ckpt/<exp_name>/config.yaml
+  checkpoint_config_is_flattened: true
+  workspace_artifacts:
+    acoustic_checkpoint: null
+    variance_checkpoint: null
+    pitch_extractor: ckpt/rmvpe/model.pt
+    vocoder: ckpt/kouon_nsf-hifigan_1031/kouon_nsf-hifigan_1031_44100hz_512hop_128bin.ckpt
+  numerical_legacy_checkpoint_regression: unavailable
+  numerical_legacy_checkpoint_regression_reason: no acoustic or variance checkpoint is present in the workspace
+  onnx:
+    opset: 15
+    torch: 1.13.1
+    runtime_host_version: 1.23.0
+    batch_size: 1
+    dynamic_axis: frames
+
+contracts:
+  configuration:
+    dit_contract_version: 1
+    unknown_backbone_args: reject
+    silently_filtered_backbone_args: forbidden
+    allowed_backbone_args:
+      - num_layers
+      - num_channels
+      - num_heads
+      - mlp_ratio
+      - time_embed_dim
+      - patch_size
+      - rope_base
+      - layer_norm_eps
+      - attention_dropout
+      - mlp_dropout
+      - use_gradient_checkpointing
+  backbone:
+    spec: [B, F, M, T]
+    diffusion_step: [B]
+    condition: [B, H, T]
+    output: [B, F, M, T]
+    valid_mask: [B, T]
+    valid_mask_true_is_valid: true
+    valid_mask_source: mel2ph > 0
+  acoustic_output: [B, T, 128]
+  pitch_output: [B, T]
+  multi_variance_output: [B, F, T]
+  checkpoint:
+    architecture_fields:
+      - backbone_type
+      - backbone_args
+      - diffusion_type
+      - time_scale_factor
+      - spec_min
+      - spec_max
+    incompatible_architecture_load: reject
+    lora_base_mismatch: reject
+
+integration_points:
+  - path: modules/backbones/__init__.py
+    responsibility: register dit and validate its exact argument schema
+  - path: modules/toplevel.py
+    responsibility: construct acoustic, pitch and multi-variance predictors and supply valid masks
+  - path: modules/fastspeech/param_adaptor.py
+    responsibility: preserve repeat-bin ordering and supply the multi-variance mask
+  - path: modules/core/ddpm.py
+    responsibility: pass valid masks to capable noise-prediction backbones
+  - path: modules/core/reflow.py
+    responsibility: pass valid masks to capable velocity backbones without changing time scaling
+  - path: training/acoustic_task.py
+    responsibility: preserve acoustic loss masking and checkpoint metadata
+  - path: training/variance_task.py
+    responsibility: preserve pitch and variance loss masking and checkpoint metadata
+  - path: inference/optimization.py
+    responsibility: gate tracing and linear replacement by backend capability
+  - path: deployment/exporters/acoustic_exporter.py
+    responsibility: preserve the legacy acoustic package protocol and opset path
+  - path: deployment/exporters/variance_exporter.py
+    responsibility: preserve the legacy variance package protocol and opset path
+  - path: deployment/modules/dit.py
+    responsibility: lower mask-aware DiT to a three-argument opset-15 basic-operator backbone
+
+minimal_matrix:
+  - id: legacy-config-acoustic
+    config: configs/original/acoustic.yaml
+    sample: samples/00_我多想说再见啊_triple.ds
+    expected_backbone: lynxnet2
+  - id: legacy-config-variance-pitch
+    config: configs/original/variance.yaml
+    sample: samples/02_不老梦_variance.ds
+    expected_backbone: lynxnet2
+  - id: dit-config-acoustic
+    config: configs/dit/config_acoustic.yaml
+    sample: samples/00_我多想说再见啊_triple.ds
+    expected_backbone: dit
+  - id: dit-config-variance-pitch
+    config: configs/dit/config_variance.yaml
+    sample: samples/02_不老梦_variance.ds
+    expected_backbone: dit
+  - id: dit-config-variance-multi
+    config: configs/dit/config_variance.yaml
+    sample: samples/02_不老梦_variance.ds
+    expected_backbone: dit
+
+implementation_status:
+  p0_contract_and_configs: complete
+  p1_backend: complete
+  p2_native_inference: complete
+  p3_onnx_float: complete
+  training_supported: true
+  native_core_sampling_supported: true
+  full_application_inference_supported: true
+  onnx_export_supported: true
+  p1_validation:
+    date: 2026-09-19
+    device: NVIDIA GeForce RTX 5060 Laptop GPU
+    device_memory_mib: 8151
+    dtype: bfloat16
+    frames: 768
+    micro_batch: 1
+    accumulate_grad_batches: 8
+    optimizer_updates: 20
+    max_memory_allocated_mib: 835.8
+    max_memory_reserved_mib: 890.0
+    scope: synthetic_training_stability_smoke
+    convergence_or_audio_quality_claimed: false
+  p2_validation:
+    date: 2026-09-19
+    device: NVIDIA GeForce RTX 5060 Laptop GPU
+    device_memory_mib: 8151
+    acoustic_batch: 2
+    variance_batch: 2
+    frames: 768
+    sampling_steps: 20
+    sampling_seconds: 0.385
+    max_memory_allocated_mib: 67.8
+    boundary_frames: 2048
+    boundary_forward_seconds: 0.025
+    boundary_max_memory_allocated_mib: 90.0
+    scope: synthetic_native_inference_functional_and_resource_smoke
+    trained_checkpoint_quality_comparison: unavailable
+    trained_checkpoint_quality_comparison_reason: no acoustic or variance checkpoint is present in the workspace
+  p3_validation:
+    date: 2026-09-19
+    export_torch: 2.11.0+cu130
+    export_mode: legacy_torchscript_exporter
+    target_opset: 15
+    onnx: 1.16.2
+    onnxruntime: 1.23.0
+    dynamic_frames: [1, 7, 16]
+    runtime_provider: CPUExecutionProvider
+    checker_passed: true
+    runtime_numerical_comparison_passed: true
+    legacy_three_argument_backbone_passed: true
+    shallow_reflow_wrapper_passed: true
+    pytorch_1_13_environment_recreated: false
+    trained_checkpoint_package_validation: unavailable
+    trained_checkpoint_package_validation_reason: no acoustic or variance checkpoint is present in the workspace
+
+recommended_training_profiles:
+  rtx_4090_24gb_10h:
+    measured_on_target_device: false
+    architecture_changed: false
+    acoustic:
+      config: configs/dit/config_acoustic_4090_10h.yaml
+      max_batch_size: 8
+      max_batch_frames: 6144
+      max_sample_frames: 768
+      accumulate_grad_batches: 1
+      val_check_interval: 500
+    variance:
+      config: configs/dit/config_variance_4090_10h.yaml
+      max_batch_size: 16
+      max_batch_frames: 12288
+      max_sample_frames: 768
+      accumulate_grad_batches: 1
+      val_check_interval: 500
+
+future_phase_prerequisites:
+  p4: trained floating-point DiT checkpoint plus representative calibration and evaluation data
+  p5: trained, quality-qualified multi-step teacher checkpoint
+  p6: trained floating-point DiT checkpoint for graph, numerical and quantized execution comparison

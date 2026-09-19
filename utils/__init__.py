@@ -240,6 +240,7 @@ def load_ckpt(
     elif key_in_ckpt is not None:
         shown_model_name = f'\'{key_in_ckpt}\''
     print(f'| load {shown_model_name} from \'{checkpoint_path}\'.')
+    return checkpoint_path
 
 
 def remove_padding(x, padding_idx=0):

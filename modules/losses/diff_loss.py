@@ -14,12 +14,11 @@ class DiffusionLoss(nn.Module):
             raise NotImplementedError()
 
     @staticmethod
-    def _mask_non_padding(x_recon, noise, non_padding=None):
-        if non_padding is not None:
-            non_padding = non_padding.transpose(1, 2).unsqueeze(1)
-            return x_recon * non_padding, noise * non_padding
-        else:
-            return x_recon, noise
+    def _get_mask(non_padding, loss):
+        if non_padding is None:
+            return None
+        mask = non_padding.transpose(1, 2).unsqueeze(1).to(loss)
+        return mask.expand_as(loss)
 
     def _forward(self, x_recon, noise):
         return self.loss(x_recon, noise)
@@ -30,5 +29,8 @@ class DiffusionLoss(nn.Module):
         :param noise: [B, 1, M, T]
         :param non_padding: [B, T, M]
         """
-        x_recon, noise = self._mask_non_padding(x_recon, noise, non_padding)
-        return self._forward(x_recon, noise).mean()
+        loss = self._forward(x_recon, noise)
+        mask = self._get_mask(non_padding, loss)
+        if mask is None:
+            return loss.mean()
+        return (loss * mask).sum() / mask.sum().clamp_min(1)

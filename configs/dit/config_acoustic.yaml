@@ -1,0 +1,38 @@
+base_config:
+  - configs/dit/acoustic.yaml
+
+# User-editable DiT acoustic template.
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+all_phonemes: [AP, SP]
+extra_phonemes: []
+merged_phoneme_groups: []
+
+datasets:
+  - raw_data_dir: data/xxx/raw
+    speaker: speaker
+    spk_id: 0
+    language: zh
+    artifact_level: 0
+    test_prefixes:
+      - wav1
+
+binary_data_dir: data/xxx/binary
+binarization_args:
+  num_workers: 0
+  allow_missing_phonemes: false
+
+vocoder: NsfHifiGAN
+vocoder_ckpt: ckpt/nsf_hifigan/model.ckpt
+
+use_lang_id: false
+num_lang: 1
+use_spk_id: false
+num_spk: 1
+use_artifact_embed: false
+use_energy_embed: false
+use_breathiness_embed: false
+use_voicing_embed: false
+use_tension_embed: false
+use_key_shift_embed: true
+use_speed_embed: true

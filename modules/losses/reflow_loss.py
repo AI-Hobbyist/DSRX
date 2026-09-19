@@ -16,12 +16,11 @@ class RectifiedFlowLoss(nn.Module):
             raise NotImplementedError()
 
     @staticmethod
-    def _mask_non_padding(v_pred, v_gt, non_padding=None):
-        if non_padding is not None:
-            non_padding = non_padding.transpose(1, 2).unsqueeze(1)
-            return v_pred * non_padding, v_gt * non_padding
-        else:
-            return v_pred, v_gt
+    def _get_mask(non_padding, loss):
+        if non_padding is None:
+            return None
+        mask = non_padding.transpose(1, 2).unsqueeze(1).to(loss)
+        return mask.expand_as(loss)
 
     @staticmethod
     def get_weights(t):
@@ -46,5 +45,8 @@ class RectifiedFlowLoss(nn.Module):
         :param t: [B,]
         :param non_padding: [B, T, M]
         """
-        v_pred, v_gt = self._mask_non_padding(v_pred, v_gt, non_padding)
-        return self._forward(v_pred, v_gt, t=t).mean()
+        loss = self._forward(v_pred, v_gt, t=t)
+        mask = self._get_mask(non_padding, loss)
+        if mask is None:
+            return loss.mean()
+        return (loss * mask).sum() / mask.sum().clamp_min(1)

@@ -8,6 +8,22 @@ from utils.hparams import hparams
 from utils.indexed_datasets import IndexedDataset
 
 
+def validate_sample_lengths(sizes, max_sample_frames: int) -> None:
+    if max_sample_frames <= 0:
+        return
+    oversized = [
+        (index, int(size)) for index, size in enumerate(sizes)
+        if int(size) > max_sample_frames
+    ]
+    if oversized:
+        preview = ', '.join(f'{index}:{size}' for index, size in oversized[:8])
+        raise ValueError(
+            f'{len(oversized)} samples exceed max_sample_frames={max_sample_frames} '
+            f'(index:length {preview}). Split them at aligned phrase/word/note '
+            f'boundaries before binarization; training-time frame cropping is unsafe.'
+        )
+
+
 class BaseDataset(Dataset):
     """
         Base class for datasets.
@@ -30,6 +46,7 @@ class BaseDataset(Dataset):
         with open(os.path.join(self.data_dir, f'{self.prefix}.meta'), 'rb') as f:
             self.metadata = pickle.load(f)
         self.sizes = self.metadata[size_key]
+        validate_sample_lengths(self.sizes, int(hparams.get('max_sample_frames', -1)))
         self._indexed_ds = IndexedDataset(self.data_dir, self.prefix)
         if preload:
             self.indexed_ds = [self._indexed_ds[i] for i in range(len(self._indexed_ds))]

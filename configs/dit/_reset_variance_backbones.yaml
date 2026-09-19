@@ -1,0 +1,7 @@
+# See _reset_acoustic_backbone.yaml. Both nested backbone mappings must be
+# cleared before the DiT mappings are applied.
+pitch_prediction_args:
+  backbone_args: null
+
+variances_prediction_args:
+  backbone_args: null

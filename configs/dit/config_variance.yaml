@@ -1,0 +1,34 @@
+base_config:
+  - configs/dit/variance.yaml
+
+# User-editable DiT variance template. Enable only the predictors required by
+# the dataset; duration prediction keeps the existing non-DiT implementation.
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+all_phonemes: [AP, SP]
+extra_phonemes: []
+merged_phoneme_groups: []
+
+datasets:
+  - raw_data_dir: data/xxx/raw
+    speaker: speaker
+    spk_id: 0
+    language: zh
+    test_prefixes:
+      - wav1
+
+binary_data_dir: data/xxx/binary
+binarization_args:
+  num_workers: 0
+  allow_missing_phonemes: false
+
+use_lang_id: false
+num_lang: 1
+use_spk_id: false
+num_spk: 1
+predict_dur: false
+predict_pitch: false
+predict_energy: false
+predict_breathiness: false
+predict_voicing: false
+predict_tension: false

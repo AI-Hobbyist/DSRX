@@ -90,6 +90,7 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
             spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
             **kwargs
         )
+        valid_mask = mel2ph > 0
         if infer:
             if self.use_shallow_diffusion:
                 aux_mel_pred = self.aux_decoder(condition, infer=True)
@@ -100,7 +101,9 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
                     src_mel = aux_mel_pred
             else:
                 aux_mel_pred = src_mel = None
-            mel_pred = self.diffusion(condition, src_spec=src_mel, infer=True)
+            mel_pred = self.diffusion(
+                condition, src_spec=src_mel, infer=True, valid_mask=valid_mask
+            )
             mel_pred *= ((mel2ph > 0).float()[:, :, None])
             return ShallowDiffusionOutput(aux_out=aux_mel_pred, diff_out=mel_pred)
         else:
@@ -111,14 +114,18 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
                 else:
                     aux_out = None
                 if self.train_diffusion:
-                    diff_out = self.diffusion(condition, gt_spec=gt_mel, infer=False)
+                    diff_out = self.diffusion(
+                        condition, gt_spec=gt_mel, infer=False, valid_mask=valid_mask
+                    )
                 else:
                     diff_out = None
                 return ShallowDiffusionOutput(aux_out=aux_out, diff_out=diff_out)
 
             else:
                 aux_out = None
-                diff_out = self.diffusion(condition, gt_spec=gt_mel, infer=False)
+                diff_out = self.diffusion(
+                    condition, gt_spec=gt_mel, infer=False, valid_mask=valid_mask
+                )
                 return ShallowDiffusionOutput(aux_out=aux_out, diff_out=diff_out)
 
 
@@ -232,6 +239,7 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
         encoder_out = F.pad(encoder_out, [0, 0, 1, 0])
         mel2ph_ = mel2ph[..., None].repeat([1, 1, hparams['hidden_size']])
         condition = torch.gather(encoder_out, 1, mel2ph_)
+        valid_mask = mel2ph > 0
 
         if self.use_spk_id:
             condition += spk_embed
@@ -278,9 +286,13 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
                 pitch_cond += self.base_pitch_embed(base_pitch[:, :, None])
 
             if infer:
-                pitch_pred_out = self.pitch_predictor(pitch_cond, infer=True)
+                pitch_pred_out = self.pitch_predictor(
+                    pitch_cond, infer=True, valid_mask=valid_mask
+                )
             else:
-                pitch_pred_out = self.pitch_predictor(pitch_cond, pitch - base_pitch, infer=False)
+                pitch_pred_out = self.pitch_predictor(
+                    pitch_cond, pitch - base_pitch, infer=False, valid_mask=valid_mask
+                )
         else:
             pitch_pred_out = None
 
@@ -299,7 +311,9 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
             ]
             var_cond += torch.stack(variance_embeds, dim=-1).sum(-1)
 
-        variance_outputs = self.variance_predictor(var_cond, variance_inputs, infer=infer)
+        variance_outputs = self.variance_predictor(
+            var_cond, variance_inputs, infer=infer, valid_mask=valid_mask
+        )
 
         if infer:
             variances_pred_out = self.collect_variance_outputs(variance_outputs)

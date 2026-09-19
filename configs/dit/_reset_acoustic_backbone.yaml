@@ -1,0 +1,4 @@
+# Keep this file as a separate cascade layer. A mapping in a child config is
+# merged key by key, so setting the inherited mapping to null first prevents
+# LYNXNet-specific arguments from leaking into the DiT contract.
+backbone_args: null

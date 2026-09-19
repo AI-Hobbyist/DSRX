@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import pathlib
@@ -76,22 +77,60 @@ class BaseTask(pl.LightningModule):
         # Inject LoRA if enabled
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+            uses_dit = self._uses_dit_backend()
             try:
                 from utils.lora import inject_lora, mark_only_lora_as_trainable
                 rank = int(lora_cfg.get('rank', 8))
                 alpha = int(lora_cfg.get('alpha', 16))
                 targets = lora_cfg.get('target_modules', ['linear'])
-                inject_lora(self.model, rank=rank, alpha=alpha, target_modules=targets)
-                mark_only_lora_as_trainable(self.model, train_bias=bool(lora_cfg.get('train_bias', False)))
                 base_ckpt = lora_cfg.get('base_ckpt')
+                if uses_dit and not base_ckpt:
+                    raise ValueError('DiT LoRA requires lora.base_ckpt.')
                 if base_ckpt:
                     from utils import load_ckpt
-                    load_ckpt(self.model, base_ckpt, prefix_in_ckpt='model', strict=False, device=self.device)
+                    checkpoint_path = load_ckpt(
+                        self.model, base_ckpt, prefix_in_ckpt='model',
+                        strict=uses_dit, device=self.device
+                    )
+                    if uses_dit:
+                        print(f'| DiT LoRA base SHA-256: {self._sha256(checkpoint_path)}')
+                matched_modules = inject_lora(
+                    self.model, rank=rank, alpha=alpha, target_modules=targets,
+                    require_match=uses_dit
+                )
+                mark_only_lora_as_trainable(
+                    self.model, train_bias=bool(lora_cfg.get('train_bias', False))
+                )
+                trainable_params = sum(
+                    parameter.numel() for parameter in self.model.parameters()
+                    if parameter.requires_grad
+                )
+                print(f'| LoRA matched {len(matched_modules)} modules: {matched_modules}')
+                print(f'| LoRA trainable parameters: {trainable_params:,}')
             except Exception as e:
+                if uses_dit:
+                    raise RuntimeError(f'DiT LoRA setup failed: {e}') from e
                 print(f'| warn: LoRA injection failed: {e}')
 
         self.valid_losses: Dict[str, Metric] = {}
         self.valid_metrics: Dict[str, Metric] = {}
+
+    @staticmethod
+    def _uses_dit_backend() -> bool:
+        backbone_types = [hparams.get('backbone_type')]
+        for key in ('pitch_prediction_args', 'variances_prediction_args'):
+            config = hparams.get(key, {})
+            if isinstance(config, dict):
+                backbone_types.append(config.get('backbone_type'))
+        return 'dit' in backbone_types
+
+    @staticmethod
+    def _sha256(path: pathlib.Path) -> str:
+        digest = hashlib.sha256()
+        with path.open('rb') as checkpoint_file:
+            for chunk in iter(lambda: checkpoint_file.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _finish_init(self):
         self.register_validation_loss('total_loss')

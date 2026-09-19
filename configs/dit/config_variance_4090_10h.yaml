@@ -1,0 +1,5 @@
+base_config:
+  - configs/dit/config_variance.yaml
+  - configs/dit/variance_4090_10h.yaml
+
+# Edit dataset and dictionary paths in config_variance.yaml before use.

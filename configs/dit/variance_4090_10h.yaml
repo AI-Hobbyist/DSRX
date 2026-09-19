@@ -1,0 +1,13 @@
+base_config:
+  - configs/dit/variance.yaml
+
+# Variance DiT backbones are smaller than the acoustic backbone. This profile
+# therefore starts at twice the micro-batch while retaining the 768-frame cap.
+max_batch_frames: 12288
+max_batch_size: 16
+max_val_batch_frames: 768
+max_val_batch_size: 1
+max_sample_frames: 768
+accumulate_grad_batches: 1
+val_check_interval: 500
+pl_trainer_precision: bf16-mixed
