@@ -2,6 +2,7 @@ import sys
 import json
 import random
 import tempfile
+import warnings
 from pathlib import Path
 
 import torch
@@ -117,16 +118,8 @@ def main():
     assert any(parameter.grad is not None for parameter in task.model.acoustic.parameters())
     assert any(parameter.grad is not None for parameter in task.model.variance.parameters())
 
-    minimal_segment = prepare_variance_segment({
-        'ph_seq': 'SP n i h ao SP',
-        'note_seq': 'rest C4 D4 rest',
-        'note_dur': '0.1 0.2 0.2 0.1'
-    }, 'zh', {})
-    assert minimal_segment['ph_num'] == '2 2 1 1'
-    assert minimal_segment['note_slur'] == '0 0 0 0'
     text_segment = prepare_variance_segment({
         'text': 'SP ni hao SP',
-        'ph_seq': 'this value must be replaced',
         'note_seq': 'rest C4 D4 rest',
         'note_dur': '0.1 0.2 0.2 0.1'
     }, 'zh', {'ni': ['n', 'i'], 'hao': ['h', 'ao']})
@@ -155,6 +148,20 @@ def main():
             rng=random.Random(0)
         )
         assert first_language != second_language
+
+        invalid_source_path = temp_dir / 'invalid.ds'
+        invalid_source_path.write_text(json.dumps([
+            {'text': 'missing', 'note_seq': 'C4', 'note_dur': '0.2'},
+            {'text': 'word', 'note_seq': 'C4', 'note_dur': '0.2'}
+        ]), encoding='utf-8')
+        with warnings.catch_warnings(record=True) as captured_warnings:
+            warnings.simplefilter('always')
+            _, segment = load_validation_sources(
+                {'enable': True, 'zh': [invalid_source_path]},
+                {'zh': dictionaries['zh']}, rng=random.Random(0)
+            )
+        assert segment['ph_seq'] == 'w er d'
+        assert len(captured_warnings) == 1
 
     variance_infer = DiffSingerVarianceInfer(
         device='cpu', predictions=set(), model=task.model.variance

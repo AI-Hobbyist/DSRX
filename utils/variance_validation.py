@@ -1,6 +1,7 @@
 import json
 import pathlib
 import random
+import warnings
 
 
 REQUIRED_FIELDS = ('ph_seq', 'note_seq', 'note_dur')
@@ -59,18 +60,11 @@ def _partition_size(total, groups):
 
 def prepare_variance_segment(segment, language, dictionary):
     segment = dict(segment)
-    if segment.get('text'):
-        phoneme_groups = text_to_phonemes(segment['text'], dictionary)
-        segment['ph_seq'] = ' '.join(phone for group in phoneme_groups for phone in group)
-        ph_num = [len(group) for group in phoneme_groups]
-    else:
-        if not segment.get('ph_seq'):
-            raise ValueError("A validation segment requires either 'text' or 'ph_seq'.")
-        missing = [field for field in REQUIRED_FIELDS if not segment.get(field)]
-        if missing:
-            raise ValueError(f'Validation segment is missing required fields: {missing}.')
-        note_count = len(segment['note_seq'].split())
-        ph_num = _partition_size(len(segment['ph_seq'].split()), note_count)
+    if not segment.get('text'):
+        raise ValueError('A validation segment requires text.')
+    phoneme_groups = text_to_phonemes(segment['text'], dictionary)
+    segment['ph_seq'] = ' '.join(phone for group in phoneme_groups for phone in group)
+    ph_num = [len(group) for group in phoneme_groups]
 
     missing = [field for field in REQUIRED_FIELDS if not segment.get(field)]
     if missing:
@@ -112,4 +106,15 @@ def load_validation_sources(config, dictionaries, previous_language=None, rng=No
     if not segments:
         raise ValueError(f'Variance validation source is empty: {path}')
     dictionary = load_language_dictionary(dictionaries[language])
-    return language, prepare_variance_segment(rng.choice(segments), language, dictionary)
+    valid_segments = []
+    for segment in segments:
+        try:
+            valid_segments.append(prepare_variance_segment(segment, language, dictionary))
+        except ValueError as error:
+            warnings.warn(
+                f'Skipping invalid variance validation segment from {path}: {error}',
+                UserWarning
+            )
+    if not valid_segments:
+        raise ValueError(f'Variance validation source has no usable text segments: {path}')
+    return language, rng.choice(valid_segments)
