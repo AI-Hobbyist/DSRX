@@ -520,6 +520,8 @@ class BaseTask(pl.LightningModule):
             def train_payload_copy():
                 # Copy files to work_dir
                 binary_dir = pathlib.Path(hparams['binary_data_dir'])
+                if hparams.get('all_in_one', {}).get('enabled', False):
+                    binary_dir /= 'acoustic'
                 spk_map_dst = work_dir / 'spk_map.json'
                 spk_map_src = binary_dir / 'spk_map.json'
                 shutil.copy(spk_map_src, spk_map_dst)
