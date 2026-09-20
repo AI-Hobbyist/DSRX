@@ -396,14 +396,14 @@ class VarianceTask(BaseTask):
         batch_size = sample['main']['size'] + sample['aux']['size']
         return sum(losses.values()), {**losses, 'batch_size': float(batch_size)}
 
-    def _validation_step(self, sample, batch_idx, modules=None, plot=True):
+    def _validation_step(self, sample, batch_idx, modules=None, plot=True, model=None):
         modules = AUX_MODULES if modules is None else set(modules)
-        losses = self.run_model(sample, infer=False, modules=modules)
+        losses = self.run_model(sample, infer=False, modules=modules, model=model)
         if plot and min(sample['indices']) < hparams['num_valid_plots']:
             def sample_get(key, idx, abs_idx):
                 return sample[key][idx][:self.valid_dataset.metadata[key][abs_idx]].unsqueeze(0)
 
-            dur_preds, pitch_preds, variances_preds = self.run_model(sample, infer=True)
+            dur_preds, pitch_preds, variances_preds = self.run_model(sample, infer=True, model=model)
             for i in range(len(sample['indices'])):
                 data_idx = sample['indices'][i]
                 if data_idx < hparams['num_valid_plots']:

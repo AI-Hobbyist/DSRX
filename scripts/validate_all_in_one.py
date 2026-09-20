@@ -4,6 +4,7 @@ import random
 import tempfile
 import warnings
 from pathlib import Path
+from typing import Any, cast
 
 import torch
 
@@ -106,6 +107,10 @@ def main():
     assert task.model.variance.variance_prediction_list == [
         'energy', 'breathiness', 'voicing', 'tension'
     ]
+    assert set(task.valid_metrics) == {
+        'rhythm_corr', 'ph_dur_acc', 'pitch_acc', 'pitch_r2',
+        'energy_r2', 'breathiness_r2', 'voicing_r2', 'tension_r2'
+    }
     assert task._split_training_batch_limit(50000, 'max_batch_frames') == 25000
     assert task._split_training_batch_limit(48, 'max_batch_size') == 24
     try:
@@ -189,6 +194,34 @@ def main():
     )
     assert variance_infer.model is task.model.variance
     assert acoustic_infer.model is task.model.acoustic
+
+    acoustic_dataset = cast(Any, object())
+    variance_dataset = cast(Any, object())
+    task.acoustic_valid_dataset = acoustic_dataset
+    task.variance_valid_dataset = variance_dataset
+    task.valid_dataset = None
+    original_acoustic_validation_step = AcousticTask._validation_step
+    original_variance_validation_step = VarianceTask._validation_step
+
+    def fake_acoustic_validation_step(self, sample, batch_idx, model=None):
+        assert self.valid_dataset is acoustic_dataset
+        assert model is self.model.acoustic
+        return {'mel_loss': torch.tensor(1.0)}, sample['size']
+
+    def fake_variance_validation_step(self, sample, batch_idx, modules=None, plot=True, model=None):
+        assert self.valid_dataset is variance_dataset
+        assert model is self.model.variance
+        return {'dur_loss': torch.tensor(1.0)}, sample['size']
+
+    try:
+        setattr(AcousticTask, '_validation_step', fake_acoustic_validation_step)
+        setattr(VarianceTask, '_validation_step', fake_variance_validation_step)
+        task.validation_step({'size': 1}, batch_idx=0, dataloader_idx=0)
+        task.validation_step({'size': 1}, batch_idx=0, dataloader_idx=1)
+    finally:
+        setattr(AcousticTask, '_validation_step', original_acoustic_validation_step)
+        setattr(VarianceTask, '_validation_step', original_variance_validation_step)
+    assert task.valid_dataset is None
 
     output_dirs = []
 

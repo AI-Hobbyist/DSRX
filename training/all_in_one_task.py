@@ -65,7 +65,7 @@ class AllInOneTask(AcousticTask):
 
     def build_losses_and_metrics(self):
         AcousticTask.build_losses_and_metrics(self)
-        VarianceTask.build_losses_and_metrics(self, register_metrics=False)
+        VarianceTask.build_losses_and_metrics(self)
 
     def setup(self, stage):
         binary_data_dir = pathlib.Path(hparams['binary_data_dir'])
@@ -173,12 +173,28 @@ class AllInOneTask(AcousticTask):
             return
         with torch.autocast(self.device.type, enabled=False):
             if dataloader_idx == 0:
-                losses = AcousticTask.run_model(self, sample, model=self.model.acoustic)
+                losses, weight = self._run_validation_step(
+                    AcousticTask._validation_step,
+                    self.acoustic_valid_dataset, sample, batch_idx,
+                    model=self.model.acoustic
+                )
             else:
-                losses = VarianceTask.run_model(self, sample, model=self.model.variance)
+                losses, weight = self._run_validation_step(
+                    VarianceTask._validation_step,
+                    self.variance_valid_dataset, sample, batch_idx,
+                    model=self.model.variance
+                )
         losses = {'total_loss': sum(losses.values()), **losses}
         for name, value in losses.items():
-            self.valid_losses[name].update(value, weight=sample['size'])
+            self.valid_losses[name].update(value, weight=weight)
+
+    def _run_validation_step(self, validation_step, dataset, sample, batch_idx, **kwargs):
+        previous_dataset = getattr(self, 'valid_dataset', None)
+        self.valid_dataset = dataset
+        try:
+            return validation_step(self, sample, batch_idx, **kwargs)
+        finally:
+            self.valid_dataset = previous_dataset
 
     def _on_validation_start(self):
         super()._on_validation_start()

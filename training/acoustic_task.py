@@ -183,10 +183,10 @@ class AcousticTask(BaseTask):
         if self.use_vocoder and self.vocoder.get_device() != self.device:
             self.vocoder.to_device(self.device)
 
-    def _validation_step(self, sample, batch_idx):
-        losses = self.run_model(sample, infer=False)
+    def _validation_step(self, sample, batch_idx, model=None):
+        losses = self.run_model(sample, infer=False, model=model)
         if sample['size'] > 0 and min(sample['indices']) < hparams['num_valid_plots']:
-            mel_out: ShallowDiffusionOutput = self.run_model(sample, infer=True)
+            mel_out: ShallowDiffusionOutput = self.run_model(sample, infer=True, model=model)
             for i in range(len(sample['indices'])):
                 data_idx = sample['indices'][i].item()
                 if data_idx < hparams['num_valid_plots']:
