@@ -44,7 +44,10 @@ class NsfHifiGAN(BaseVocoder):
             )
         rank_zero_info(f'| Load HifiGAN: {model_path}')
         self.model, self.h = load_model(model_path)
-        self._optimization_enabled = bool(hparams.get('inference_optimization', True))
+        self._optimization_enabled = bool(
+            hparams.get('infer', False)
+            and hparams.get('inference_optimization', True)
+        )
         self._bucketed_backend_requested = bool(
             hparams.get('inference_vocoder_nsf_bucketed_backend', True)
         )
