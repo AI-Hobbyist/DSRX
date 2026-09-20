@@ -12,7 +12,9 @@ from utils.multiprocess_utils import is_main_process as mp_is_main_process
 global_print_hparams = True
 hparams = {}
 
-REPLACE_CONFIG_MAPPINGS = {'backbone_args', 'optimizer_args', 'lr_scheduler_args'}
+REPLACE_CONFIG_MAPPINGS = {
+    'aux_datasets', 'backbone_args', 'optimizer_args', 'lr_scheduler_args'
+}
 
 
 class Args:

@@ -4,7 +4,9 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPLACE_CONFIG_MAPPINGS = {"backbone_args", "optimizer_args", "lr_scheduler_args"}
+REPLACE_CONFIG_MAPPINGS = {
+    "aux_datasets", "backbone_args", "optimizer_args", "lr_scheduler_args"
+}
 DIT_ARGS = {
     "num_layers",
     "num_channels",

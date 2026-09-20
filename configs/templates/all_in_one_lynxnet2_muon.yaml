@@ -31,6 +31,24 @@ datasets:
       - wav1
 
 binary_data_dir: data/xxx/binary-all-in-one
+aux_datasets:
+  enable: false
+  module:
+    - pitch
+    - voicing
+  datasets:
+    # Use raw dataset directories like datasets[].raw_data_dir.
+    # Manually refined singing is recommended.
+    data:
+      - zh: data/opencpop
+      - en: data/english-singing
+    val:
+      zh:
+        - prefix_1
+        - prefix_2
+      en: []
+  spk_ids: []  # empty for automatic IDs, or one ID per data entry
+
 binarization_args:
   shuffle: true
   num_workers: 0
