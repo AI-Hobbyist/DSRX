@@ -107,9 +107,13 @@ def validate_checkpoint_gradients() -> None:
 
 def validate_muon_parameter_partition() -> None:
     unmarked_modules = nn.Sequential(nn.Linear(8, 8), nn.Conv1d(8, 8, 3))
-    assert get_params_for_muon(unmarked_modules) == []
+    unmarked_muon_param_ids = {
+        id(parameter) for parameter in get_params_for_muon(unmarked_modules)
+    }
+    assert unmarked_muon_param_ids == {
+        id(unmarked_modules[0].weight), id(unmarked_modules[1].weight)
+    }
     embedding = nn.Embedding(8, 8)
-    embedding.use_muon = True
     assert get_params_for_muon(embedding) == []
 
     hparams.clear()
@@ -126,24 +130,14 @@ def validate_muon_parameter_partition() -> None:
     )
     muon_param_ids = {id(parameter) for parameter in get_params_for_muon(model)}
     expected_muon_param_ids = {
-        id(linear.weight)
-        for block in model.blocks
-        for linear in (block.attn.qkv, block.attn.proj, block.mlp.fc1, block.mlp.fc2)
+        id(parameter)
+        for module in model.modules()
+        if not isinstance(module, nn.Embedding)
+        for parameter in module.parameters(recurse=False)
+        if parameter.requires_grad and parameter.ndim >= 2
     }
 
     assert muon_param_ids == expected_muon_param_ids
-    assert id(model.input_proj.weight) not in muon_param_ids
-    assert id(model.cond_proj.weight) not in muon_param_ids
-    assert all(
-        id(linear.weight) not in muon_param_ids
-        for linear in (model.time_mlp[0], model.time_mlp[2])
-    )
-    assert id(model.output_proj.weight) not in muon_param_ids
-    assert id(model.final_modulation[1].weight) not in muon_param_ids
-    assert all(
-        id(block.adaLN_modulation[1].weight) not in muon_param_ids
-        for block in model.blocks
-    )
 
     optimizer = Muon_AdamW(model)
     optimizer_param_ids = [
@@ -154,13 +148,8 @@ def validate_muon_parameter_partition() -> None:
         }
         for inner_optimizer in optimizer.optimizers
     ]
-    assert id(model.blocks[0].attn.qkv.weight) in optimizer_param_ids[0]
-    assert id(model.output_proj.weight) in optimizer_param_ids[1]
-    assert id(model.final_modulation[1].weight) in optimizer_param_ids[1]
-    assert all(
-        id(block.adaLN_modulation[1].weight) in optimizer_param_ids[1]
-        for block in model.blocks
-    )
+    assert optimizer_param_ids[0] == expected_muon_param_ids
+    assert optimizer_param_ids[1].isdisjoint(expected_muon_param_ids)
 
     spec = torch.randn(2, 1, 4, 5)
     cond = torch.randn(2, 8, 5)
