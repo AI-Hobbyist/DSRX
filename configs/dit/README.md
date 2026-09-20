@@ -1,17 +1,17 @@
 # DiT configuration, training and deployment
 
-This directory contains the frozen P0 configuration contract, P1 floating-point
-training templates, P2 native PyTorch inference policy and P3 floating-point
-ONNX export contract. Quantization, distillation and GGUF remain later phases.
+This directory contains the frozen P0 configuration contract, P2 native
+PyTorch inference policy and P3 floating-point ONNX export contract.
+User-editable training configurations live in `configs/templates`.
+Quantization, distillation and GGUF remain later phases.
 
 ## Files
 
-- `acoustic.yaml` and `variance.yaml` are architecture-specific cascade layers.
-- `config_acoustic.yaml` and `config_variance.yaml` are user-editable templates.
-- `*_4090_10h.yaml` files provide recommended starting overlays and editable
-  templates for one RTX 4090 with about 10 hours of aligned data.
-- `_reset_*.yaml` clears inherited convolution-only arguments before DiT
-  arguments are merged.
+- `../templates/config_acoustic_dit.yaml` and
+  `../templates/config_variance_dit.yaml` are user-editable DiT templates.
+- `../templates/*_4090_10h_dit.yaml` files provide recommended starting
+  profiles for one RTX 4090 with about 10 hours of aligned data.
+- `../templates/all_in_one_dit.yaml` is the aggregate DiT training template.
 - `p0_baseline.yaml` records the repository baseline, tensor/checkpoint
   contracts and the minimum compatibility matrix.
 
@@ -21,10 +21,9 @@ synthetic training, native inference and legacy call compatibility, but does
 not claim numerical regression, convergence or audio quality against trained
 weights.
 
-The reset layers are required because `utils.hparams.override_config()` merges
-nested mappings key by key. Without the reset, fields such as `kernel_size` and
-`dropout_rate` would survive from the LYNXNet2 configuration and could be
-silently discarded by the current `filter_kwargs()` path.
+Implementation-specific mappings such as `backbone_args` are replaced as a
+whole during inheritance, so parameters from another backbone cannot leak into
+the DiT templates.
 
 Run the configuration and P1 behavior validations with:
 
@@ -86,10 +85,12 @@ the 22,019,456-parameter acoustic DiT and both variance architectures unchanged:
 Both profiles use `max_sample_frames: 768`, `accumulate_grad_batches: 1`,
 validation batch 1 and `bf16-mixed`. `max_batch_frames` is a total frame budget,
 so variable-length batches may contain fewer samples than the micro-batch cap.
-Start with [config_acoustic_4090_10h.yaml](config_acoustic_4090_10h.yaml) or
-[config_variance_4090_10h.yaml](config_variance_4090_10h.yaml), then reduce the
-batch cap and frame budget together if the complete training or validation path
-exceeds dedicated VRAM.
+Start with
+[config_acoustic_4090_10h_dit.yaml](../templates/config_acoustic_4090_10h_dit.yaml)
+or
+[config_variance_4090_10h_dit.yaml](../templates/config_variance_4090_10h_dit.yaml),
+then reduce the batch cap and frame budget together if the complete training or
+validation path exceeds dedicated VRAM.
 
 ## Later phase prerequisites
 

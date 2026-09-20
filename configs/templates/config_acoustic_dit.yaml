@@ -1,8 +1,42 @@
 base_config:
   - configs/original/acoustic.yaml
-  - configs/dit/_reset_acoustic_backbone.yaml
 
-# P0 freezes this contract. The backend itself is implemented in P1.
+# User-editable DiT acoustic template.
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+all_phonemes: [AP, SP]
+extra_phonemes: []
+merged_phoneme_groups: []
+
+datasets:
+  - raw_data_dir: data/xxx/raw
+    speaker: speaker
+    spk_id: 0
+    language: zh
+    artifact_level: 0
+    test_prefixes:
+      - wav1
+
+binary_data_dir: data/xxx/binary
+binarization_args:
+  num_workers: 0
+  allow_missing_phonemes: false
+
+vocoder: NsfHifiGAN
+vocoder_ckpt: ckpt/nsf_hifigan/model.ckpt
+
+use_lang_id: false
+num_lang: 1
+use_spk_id: false
+num_spk: 1
+use_artifact_embed: false
+use_energy_embed: false
+use_breathiness_embed: false
+use_voicing_embed: false
+use_tension_embed: false
+use_key_shift_embed: true
+use_speed_embed: true
+
 dit_contract:
   version: 1
   valid_mask_source: mel2ph
@@ -31,8 +65,6 @@ use_shallow_diffusion: true
 T_start: 0.4
 T_start_infer: 0.4
 
-# Conservative 8 GiB starting point; the data pipeline must still enforce the
-# per-sample length limit in P1.
 max_batch_frames: 768
 max_batch_size: 1
 max_val_batch_frames: 768
@@ -57,11 +89,9 @@ lr_scheduler_args:
       gamma: 0.8
   milestones: [1000]
 
-# Native inference keeps mask-aware DiT eager and only warms bounded lengths.
 inference_max_frames: 2048
 inference_dit_warmup_frames: [128, 512, 768, 1024]
 
-# Never inherit the legacy acoustic config's enabled LoRA or local base path.
 lora:
   enabled: false
   rank: 8

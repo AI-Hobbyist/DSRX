@@ -23,7 +23,7 @@ from utils.variance_validation import (
 
 
 def configure_smoke_model():
-    set_hparams('configs/dit/all_in_one.yaml', print_hparams=False)
+    set_hparams('configs/templates/all_in_one_dit.yaml', print_hparams=False)
     hparams['hidden_size'] = 16
     hparams['audio_num_mel_bins'] = 4
     hparams['spec_min'] = [-12]

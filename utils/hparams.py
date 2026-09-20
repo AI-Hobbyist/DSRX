@@ -12,6 +12,8 @@ from utils.multiprocess_utils import is_main_process as mp_is_main_process
 global_print_hparams = True
 hparams = {}
 
+REPLACE_CONFIG_MAPPINGS = {'backbone_args', 'optimizer_args', 'lr_scheduler_args'}
+
 
 class Args:
     def __init__(self, **kwargs):
@@ -22,7 +24,10 @@ class Args:
 def override_config(old_config: dict, new_config: dict):
     for k, v in new_config.items():
         old_value = old_config.get(k)
-        if isinstance(v, dict) and isinstance(old_value, dict):
+        if (
+                k not in REPLACE_CONFIG_MAPPINGS
+                and isinstance(v, dict) and isinstance(old_value, dict)
+        ):
             override_config(old_value, v)
         else:
             old_config[k] = v

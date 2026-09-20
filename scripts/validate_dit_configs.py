@@ -4,6 +4,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPLACE_CONFIG_MAPPINGS = {"backbone_args", "optimizer_args", "lr_scheduler_args"}
 DIT_ARGS = {
     "num_layers",
     "num_channels",
@@ -22,7 +23,11 @@ DIT_ARGS = {
 def override_config(old_config: dict, new_config: dict) -> None:
     for key, value in new_config.items():
         old_value = old_config.get(key)
-        if isinstance(value, dict) and isinstance(old_value, dict):
+        if (
+            key not in REPLACE_CONFIG_MAPPINGS
+            and isinstance(value, dict)
+            and isinstance(old_value, dict)
+        ):
             override_config(old_value, value)
         else:
             old_config[key] = value
@@ -113,18 +118,53 @@ def validate_acoustic_optimization(config: dict) -> None:
 
 
 def main() -> None:
-    acoustic = load_config(ROOT / "configs/dit/config_acoustic.yaml")
-    variance = load_config(ROOT / "configs/dit/config_variance.yaml")
-    acoustic_4090 = load_config(ROOT / "configs/dit/config_acoustic_4090_10h.yaml")
-    variance_4090 = load_config(ROOT / "configs/dit/config_variance_4090_10h.yaml")
-    all_in_one = load_config(ROOT / "configs/dit/all_in_one.yaml")
+    acoustic = load_config(ROOT / "configs/templates/config_acoustic_dit.yaml")
+    variance = load_config(ROOT / "configs/templates/config_variance_dit.yaml")
+    acoustic_4090 = load_config(
+        ROOT / "configs/templates/config_acoustic_4090_10h_dit.yaml"
+    )
+    variance_4090 = load_config(
+        ROOT / "configs/templates/config_variance_4090_10h_dit.yaml"
+    )
+    all_in_one = load_config(ROOT / "configs/templates/all_in_one_dit.yaml")
     legacy_acoustic = load_config(ROOT / "configs/original/acoustic.yaml")
     legacy_variance = load_config(ROOT / "configs/original/variance.yaml")
+    wavenet_all_in_one = load_config(
+        ROOT / "configs/templates/all_in_one_wavenet_adamw.yaml"
+    )
+    lynxnet2_all_in_one = load_config(
+        ROOT / "configs/templates/all_in_one_lynxnet2_muon.yaml"
+    )
 
     assert legacy_acoustic["backbone_type"] == "lynxnet2"
     assert legacy_variance["pitch_prediction_args"]["backbone_type"] == "lynxnet2"
     assert legacy_acoustic["all_in_one"]["enabled"] is False
     assert legacy_variance["all_in_one"]["enabled"] is False
+
+    for config in (wavenet_all_in_one, lynxnet2_all_in_one):
+        assert config["all_in_one"]["enabled"] is True
+        assert config["task_cls"] == "training.all_in_one_task.AllInOneTask"
+        assert config["binarizer_cls"] == "preprocessing.all_in_one_binarizer.AllInOneBinarizer"
+        assert config["val_with_variance"]["enable"] is False
+        assert all(
+            config[f"predict_{name}"] is True
+            for name in ("dur", "pitch", "energy", "breathiness", "voicing", "tension")
+        )
+
+    assert wavenet_all_in_one["backbone_type"] == "wavenet"
+    assert wavenet_all_in_one["pitch_prediction_args"]["backbone_type"] == "wavenet"
+    assert wavenet_all_in_one["variances_prediction_args"]["backbone_type"] == "wavenet"
+    assert wavenet_all_in_one["optimizer_args"]["optimizer_cls"] == "torch.optim.AdamW"
+    assert set(wavenet_all_in_one["optimizer_args"]) == {
+        "optimizer_cls", "lr", "betas", "weight_decay"
+    }
+
+    assert lynxnet2_all_in_one["backbone_type"] == "lynxnet2"
+    assert lynxnet2_all_in_one["pitch_prediction_args"]["backbone_type"] == "lynxnet2"
+    assert lynxnet2_all_in_one["variances_prediction_args"]["backbone_type"] == "lynxnet2"
+    assert lynxnet2_all_in_one["optimizer_args"]["optimizer_cls"] == (
+        "modules.optimizer.muon.Muon_AdamW"
+    )
 
     validate_common(acoustic)
     assert acoustic["backbone_type"] == "dit"

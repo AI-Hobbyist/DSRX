@@ -91,15 +91,15 @@ minimal_matrix:
     sample: samples/02_不老梦_variance.ds
     expected_backbone: lynxnet2
   - id: dit-config-acoustic
-    config: configs/dit/config_acoustic.yaml
+    config: configs/templates/config_acoustic_dit.yaml
     sample: samples/00_我多想说再见啊_triple.ds
     expected_backbone: dit
   - id: dit-config-variance-pitch
-    config: configs/dit/config_variance.yaml
+    config: configs/templates/config_variance_dit.yaml
     sample: samples/02_不老梦_variance.ds
     expected_backbone: dit
   - id: dit-config-variance-multi
-    config: configs/dit/config_variance.yaml
+    config: configs/templates/config_variance_dit.yaml
     sample: samples/02_不老梦_variance.ds
     expected_backbone: dit
 
@@ -163,14 +163,14 @@ recommended_training_profiles:
     measured_on_target_device: false
     architecture_changed: false
     acoustic:
-      config: configs/dit/config_acoustic_4090_10h.yaml
+      config: configs/templates/config_acoustic_4090_10h_dit.yaml
       max_batch_size: 8
       max_batch_frames: 6144
       max_sample_frames: 768
       accumulate_grad_batches: 1
       val_check_interval: 500
     variance:
-      config: configs/dit/config_variance_4090_10h.yaml
+      config: configs/templates/config_variance_4090_10h_dit.yaml
       max_batch_size: 16
       max_batch_frames: 12288
       max_sample_frames: 768

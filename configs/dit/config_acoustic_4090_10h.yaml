@@ -1,5 +1,0 @@
-base_config:
-  - configs/dit/config_acoustic.yaml
-  - configs/dit/acoustic_4090_10h.yaml
-
-# Edit dataset, dictionary and vocoder paths in config_acoustic.yaml before use.

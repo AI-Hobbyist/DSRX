@@ -24,7 +24,7 @@ def main() -> None:
         raise RuntimeError('CUDA is required for the 8GB DiT training smoke test.')
 
     hparams.clear()
-    hparams.update(load_config(ROOT / 'configs/dit/config_acoustic.yaml'))
+    hparams.update(load_config(ROOT / 'configs/templates/config_acoustic_dit.yaml'))
     assert args.frames <= hparams['max_sample_frames']
 
     device = torch.device('cuda')

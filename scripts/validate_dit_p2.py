@@ -59,7 +59,7 @@ def validate_linear_protection() -> None:
 
 def validate_dit_inference_policy() -> None:
     hparams.clear()
-    hparams.update(load_config(ROOT / 'configs/dit/config_acoustic.yaml'))
+    hparams.update(load_config(ROOT / 'configs/templates/config_acoustic_dit.yaml'))
     hparams['hidden_size'] = 256
     model = DiT(
         128,
@@ -293,7 +293,7 @@ def validate_cuda_optimization() -> None:
 def validate_cuda_top_level_inference() -> None:
     device = torch.device('cuda')
     hparams.clear()
-    hparams.update(load_config(ROOT / 'configs/dit/config_acoustic.yaml'))
+    hparams.update(load_config(ROOT / 'configs/templates/config_acoustic_dit.yaml'))
     hparams.update({
         'sampling_steps': 2,
         'use_spk_id': False,
@@ -326,7 +326,7 @@ def validate_cuda_top_level_inference() -> None:
     torch.cuda.empty_cache()
 
     hparams.clear()
-    hparams.update(load_config(ROOT / 'configs/dit/config_variance.yaml'))
+    hparams.update(load_config(ROOT / 'configs/templates/config_variance_dit.yaml'))
     hparams.update({
         'sampling_steps': 2,
         'predict_pitch': True,

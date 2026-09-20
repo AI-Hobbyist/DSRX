@@ -1,5 +1,5 @@
 base_config:
-  - configs/dit/acoustic.yaml
+  - configs/templates/config_acoustic_dit.yaml
 
 # Recommended starting point for one RTX 4090 (24 GiB) and about 10 hours of
 # aligned data. Keep max_sample_frames unchanged to bound global attention.

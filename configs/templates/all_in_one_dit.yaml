@@ -1,7 +1,6 @@
 base_config:
-  - configs/dit/acoustic.yaml
-  - configs/dit/variance.yaml
-  - configs/dit/_reset_all_in_one_training.yaml
+  - configs/original/acoustic.yaml
+  - configs/original/variance.yaml
 
 task_cls: training.all_in_one_task.AllInOneTask
 binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
@@ -66,6 +65,64 @@ predict_breathiness: true
 predict_voicing: true
 predict_tension: true
 
+dit_contract:
+  version: 1
+  valid_mask_source: mel2ph
+  valid_mask_true_is_valid: true
+  padded_batches_require_mask: true
+
+backbone_type: dit
+backbone_args:
+  num_layers: 8
+  num_channels: 384
+  num_heads: 6
+  mlp_ratio: 4
+  time_embed_dim: 256
+  patch_size: 1
+  rope_base: 10000.0
+  layer_norm_eps: 0.000001
+  attention_dropout: 0.0
+  mlp_dropout: 0.0
+  use_gradient_checkpointing: true
+
+pitch_prediction_args:
+  backbone_type: dit
+  backbone_args:
+    num_layers: 4
+    num_channels: 256
+    num_heads: 4
+    mlp_ratio: 4
+    time_embed_dim: 256
+    patch_size: 1
+    rope_base: 10000.0
+    layer_norm_eps: 0.000001
+    attention_dropout: 0.0
+    mlp_dropout: 0.0
+    use_gradient_checkpointing: true
+
+variances_prediction_args:
+  backbone_type: dit
+  backbone_args:
+    num_layers: 4
+    num_channels: 256
+    num_heads: 4
+    mlp_ratio: 4
+    time_embed_dim: 256
+    patch_size: 1
+    rope_base: 10000.0
+    layer_norm_eps: 0.000001
+    attention_dropout: 0.0
+    mlp_dropout: 0.0
+    use_gradient_checkpointing: true
+
+diffusion_type: reflow
+sampling_algorithm: euler
+sampling_steps: 20
+time_scale_factor: 1000
+use_shallow_diffusion: true
+T_start: 0.4
+T_start_infer: 0.4
+
 val_with_vocoder: false
 max_batch_frames: 768
 max_batch_size: 1
@@ -74,6 +131,9 @@ max_val_batch_size: 1
 max_sample_frames: 768
 accumulate_grad_batches: 8
 clip_grad_norm: 1.0
+
+inference_max_frames: 2048
+inference_dit_warmup_frames: [128, 512, 768, 1024]
 
 optimizer_args:
   optimizer_cls: torch.optim.AdamW
