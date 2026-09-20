@@ -13,14 +13,14 @@ from utils.hparams import hparams
 class RectifiedFlow(nn.Module):
     def __init__(self, out_dims, num_feats=1, t_start=0., time_scale_factor=1000,
                  backbone_type=None, backbone_args=None,
-                 spec_min=None, spec_max=None):
+                 spec_min=None, spec_max=None, use_shallow_diffusion=False):
         super().__init__()
         if backbone_type is None or backbone_args is None:
             raise ValueError('RectifiedFlow requires backbone_type and backbone_args.')
         self.velocity_fn: nn.Module = build_backbone(out_dims, num_feats, backbone_type, backbone_args)
         self.out_dims = out_dims
         self.num_feats = num_feats
-        self.use_shallow_diffusion = hparams.get('use_shallow_diffusion', False)
+        self.use_shallow_diffusion = use_shallow_diffusion
         if self.use_shallow_diffusion:
             assert 0. <= t_start <= 1., 'T_start should be in [0, 1].'
         else:

@@ -31,7 +31,8 @@ def configure_smoke_model():
     hparams['spec_max'] = [0]
     hparams['enc_layers'] = 1
     hparams['num_heads'] = 2
-    hparams['use_shallow_diffusion'] = False
+    hparams['use_shallow_diffusion'] = True
+    hparams['sampling_steps'] = 1
     hparams['backbone_args'] = {
         'num_layers': 1,
         'num_channels': 16,
@@ -99,9 +100,18 @@ def main():
     assert task.model.category == 'all_in_one'
     assert hparams['predict_dur'] is True
     assert task.model.variance.predict_dur is True
+    assert task.model.acoustic.diffusion.use_shallow_diffusion is True
+    assert task.model.variance.pitch_predictor.use_shallow_diffusion is False
+    assert task.model.variance.variance_predictor.use_shallow_diffusion is False
     assert task.model.variance.variance_prediction_list == [
         'energy', 'breathiness', 'voicing', 'tension'
     ]
+
+    pitch_condition = torch.randn(1, 4, hparams['hidden_size'])
+    pitch_prediction = task.model.variance.pitch_predictor(
+        pitch_condition, infer=True, valid_mask=torch.ones(1, 4, dtype=torch.bool)
+    )
+    assert pitch_prediction.shape == (1, 4)
 
     acoustic_losses = AcousticTask.run_model(
         task, acoustic_sample(), model=task.model.acoustic
@@ -109,7 +119,7 @@ def main():
     variance_losses = VarianceTask.run_model(
         task, variance_sample(), model=task.model.variance
     )
-    assert set(acoustic_losses) == {'mel_loss'}
+    assert set(acoustic_losses) == {'aux_mel_loss', 'mel_loss'}
     assert set(variance_losses) == {'dur_loss', 'pitch_loss', 'var_loss'}
     losses = {**acoustic_losses, **variance_losses}
     assert all(torch.isfinite(loss) for loss in losses.values())

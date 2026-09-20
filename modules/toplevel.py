@@ -87,7 +87,8 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
                 backbone_type=self.backbone_type,
                 backbone_args=self.backbone_args,
                 spec_min=hparams['spec_min'],
-                spec_max=hparams['spec_max']
+                spec_max=hparams['spec_max'],
+                use_shallow_diffusion=self.use_shallow_diffusion
             )
         else:
             raise NotImplementedError(self.diffusion_type)
