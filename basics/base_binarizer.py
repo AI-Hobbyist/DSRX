@@ -43,12 +43,12 @@ class BaseBinarizer:
             the phoneme set.
     """
 
-    def __init__(self, datasets=None, data_attrs=None):
+    def __init__(self, datasets=None, data_attrs=None, binary_data_dir=None):
         if datasets is None:
             datasets = hparams['datasets']
         self.datasets = datasets
         self.raw_data_dirs = [pathlib.Path(ds['raw_data_dir']) for ds in self.datasets]
-        self.binary_data_dir = pathlib.Path(hparams['binary_data_dir'])
+        self.binary_data_dir = pathlib.Path(binary_data_dir or hparams['binary_data_dir'])
         self.data_attrs = [] if data_attrs is None else data_attrs
 
         self.binarization_args = hparams['binarization_args']

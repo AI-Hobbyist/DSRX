@@ -39,10 +39,10 @@ class BaseDataset(Dataset):
             the index function.
     """
 
-    def __init__(self, prefix, size_key='lengths', preload=False):
+    def __init__(self, prefix, size_key='lengths', preload=False, data_dir=None):
         super().__init__()
         self.prefix = prefix
-        self.data_dir = hparams['binary_data_dir']
+        self.data_dir = data_dir or hparams['binary_data_dir']
         with open(os.path.join(self.data_dir, f'{self.prefix}.meta'), 'rb') as f:
             self.metadata = pickle.load(f)
         self.sizes = self.metadata[size_key]
