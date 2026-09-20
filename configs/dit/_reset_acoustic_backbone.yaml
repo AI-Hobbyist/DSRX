@@ -3,5 +3,8 @@
 # LYNXNet-specific arguments from leaking into the DiT contract.
 backbone_args: null
 
+# Rebuild optimizer arguments without inherited Muon-only fields.
+optimizer_args: null
+
 # Rebuild the DiT learning-rate schedule without inherited StepLR fields.
 lr_scheduler_args: null

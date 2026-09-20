@@ -88,7 +88,12 @@ def validate_common(config: dict) -> None:
 
 
 def validate_acoustic_optimization(config: dict) -> None:
-    assert config["optimizer_args"]["lr"] == 0.0003
+    optimizer = config["optimizer_args"]
+    assert optimizer == {
+        "optimizer_cls": "torch.optim.AdamW",
+        "lr": 0.0003,
+        "weight_decay": 0.0,
+    }
     scheduler = config["lr_scheduler_args"]
     assert set(scheduler) == {"scheduler_cls", "schedulers", "milestones"}
     assert scheduler["scheduler_cls"] == "torch.optim.lr_scheduler.SequentialLR"

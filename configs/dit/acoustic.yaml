@@ -42,7 +42,9 @@ accumulate_grad_batches: 8
 clip_grad_norm: 1.0
 
 optimizer_args:
+  optimizer_cls: torch.optim.AdamW
   lr: 0.0003
+  weight_decay: 0.0
 lr_scheduler_args:
   scheduler_cls: torch.optim.lr_scheduler.SequentialLR
   schedulers:
