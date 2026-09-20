@@ -9,6 +9,16 @@ binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
 all_in_one:
   enabled: true
 
+# Optional all-in-one validation preview. Each validation epoch samples one
+# segment from a language different from the previous epoch, predicts all
+# enabled variances, then logs one mel/audio preview per speaker with val data.
+val_with_variance:
+  enable: false
+  # zh:
+  #   - samples/02_不老梦_variance.ds
+  # en:
+  #   - path/to/english.ds
+
 # The same raw corpus is independently binarized into acoustic and variance
 # representations under binary_data_dir/{acoustic,variance}.
 dictionaries:

@@ -1,4 +1,7 @@
 import sys
+import json
+import random
+import tempfile
 from pathlib import Path
 
 import torch
@@ -10,7 +13,13 @@ from training.acoustic_task import AcousticTask
 from training.all_in_one_task import AllInOneTask
 from training.variance_task import VarianceTask
 from preprocessing import all_in_one_binarizer
+from inference.ds_acoustic import DiffSingerAcousticInfer
+from inference.ds_variance import DiffSingerVarianceInfer
 from utils.hparams import hparams, set_hparams
+from utils.variance_validation import (
+    load_validation_sources, prepare_variance_segment,
+    validate_variance_validation_config
+)
 
 
 def configure_smoke_model():
@@ -85,6 +94,7 @@ def main():
     configure_smoke_model()
     hparams['predict_dur'] = False
     task = AllInOneTask()
+    assert task.val_with_variance_enabled is False
     assert task.model.category == 'all_in_one'
     assert hparams['predict_dur'] is True
     assert task.model.variance.predict_dur is True
@@ -106,6 +116,54 @@ def main():
     sum(losses.values()).backward()
     assert any(parameter.grad is not None for parameter in task.model.acoustic.parameters())
     assert any(parameter.grad is not None for parameter in task.model.variance.parameters())
+
+    minimal_segment = prepare_variance_segment({
+        'ph_seq': 'SP n i h ao SP',
+        'note_seq': 'rest C4 D4 rest',
+        'note_dur': '0.1 0.2 0.2 0.1'
+    }, 'zh', {})
+    assert minimal_segment['ph_num'] == '2 2 1 1'
+    assert minimal_segment['note_slur'] == '0 0 0 0'
+    text_segment = prepare_variance_segment({
+        'text': 'SP ni hao SP',
+        'ph_seq': 'this value must be replaced',
+        'note_seq': 'rest C4 D4 rest',
+        'note_dur': '0.1 0.2 0.2 0.1'
+    }, 'zh', {'ni': ['n', 'i'], 'hao': ['h', 'ao']})
+    assert text_segment['ph_seq'] == 'SP n i h ao SP'
+    assert text_segment['ph_num'] == '1 2 2 1'
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = Path(temp_dir)
+        dictionaries = {}
+        sources = {'enable': True}
+        for language in ('zh', 'en'):
+            dictionary_path = temp_dir / f'{language}.txt'
+            dictionary_path.write_text('word\tw er d\n', encoding='utf-8')
+            source_path = temp_dir / f'{language}.ds'
+            source_path.write_text(json.dumps([{
+                'text': 'word', 'note_seq': 'C4', 'note_dur': '0.2'
+            }]), encoding='utf-8')
+            dictionaries[language] = dictionary_path
+            sources[language] = [source_path]
+        validate_variance_validation_config(sources, dictionaries)
+        first_language, _ = load_validation_sources(
+            sources, dictionaries, rng=random.Random(0)
+        )
+        second_language, _ = load_validation_sources(
+            sources, dictionaries, previous_language=first_language,
+            rng=random.Random(0)
+        )
+        assert first_language != second_language
+
+    variance_infer = DiffSingerVarianceInfer(
+        device='cpu', predictions=set(), model=task.model.variance
+    )
+    acoustic_infer = DiffSingerAcousticInfer(
+        device='cpu', load_vocoder=False, model=task.model.acoustic
+    )
+    assert variance_infer.model is task.model.variance
+    assert acoustic_infer.model is task.model.acoustic
 
     output_dirs = []
 

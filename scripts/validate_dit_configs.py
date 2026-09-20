@@ -142,6 +142,7 @@ def main() -> None:
     validate_common(all_in_one)
     validate_acoustic_optimization(all_in_one)
     assert all_in_one["all_in_one"]["enabled"] is True
+    assert all_in_one["val_with_variance"]["enable"] is False
     assert all_in_one["task_cls"] == "training.all_in_one_task.AllInOneTask"
     assert all_in_one["binarizer_cls"] == "preprocessing.all_in_one_binarizer.AllInOneBinarizer"
     assert all(
