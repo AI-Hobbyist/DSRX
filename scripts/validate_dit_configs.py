@@ -75,7 +75,10 @@ def validate_dit_args(name: str, args: object, expected_channels: int) -> None:
     assert args["patch_size"] == 1
 
 
-def validate_common(config: dict) -> None:
+def validate_common(
+    config: dict, expected_batch_frames: int = 768,
+    expected_batch_size: int = 1
+) -> None:
     contract = config["dit_contract"]
     assert contract == {
         "version": 1,
@@ -83,8 +86,8 @@ def validate_common(config: dict) -> None:
         "valid_mask_true_is_valid": True,
         "padded_batches_require_mask": True,
     }
-    assert config["max_batch_frames"] == 768
-    assert config["max_batch_size"] == 1
+    assert config["max_batch_frames"] == expected_batch_frames
+    assert config["max_batch_size"] == expected_batch_size
     assert config["max_sample_frames"] == 768
     assert config["accumulate_grad_batches"] == 8
     assert config["inference_max_frames"] == 2048
@@ -145,6 +148,8 @@ def main() -> None:
 
     for config in (wavenet_all_in_one, lynxnet2_all_in_one):
         assert config["all_in_one"]["enabled"] is True
+        assert config["max_batch_frames"] == 1536
+        assert config["max_batch_size"] == 2
         assert config["task_cls"] == "training.all_in_one_task.AllInOneTask"
         assert config["binarizer_cls"] == "preprocessing.all_in_one_binarizer.AllInOneBinarizer"
         assert config["val_with_variance"]["enable"] is False
@@ -181,7 +186,7 @@ def main() -> None:
     validate_dit_args("pitch", pitch["backbone_args"], 256)
     validate_dit_args("variances", variances["backbone_args"], 256)
 
-    validate_common(all_in_one)
+    validate_common(all_in_one, expected_batch_frames=1536, expected_batch_size=2)
     validate_acoustic_optimization(all_in_one)
     assert all_in_one["all_in_one"]["enabled"] is True
     assert all_in_one["val_with_variance"]["enable"] is False

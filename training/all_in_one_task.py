@@ -18,6 +18,8 @@ from utils.variance_validation import (
 
 
 class AllInOneTask(AcousticTask):
+    training_stream_count = 2
+
     def __init__(self):
         all_in_one_config = hparams.get('all_in_one', {})
         if not isinstance(all_in_one_config, dict) or not all_in_one_config.get('enabled', False):
@@ -88,10 +90,20 @@ class AllInOneTask(AcousticTask):
         self.num_replicas = (self.trainer.distributed_sampler_kwargs or {}).get('num_replicas', 1)
 
     def _build_dataloader(self, name, dataset, training):
+        if training:
+            max_batch_frames = self._split_training_batch_limit(
+                self.max_batch_frames, 'max_batch_frames'
+            )
+            max_batch_size = self._split_training_batch_limit(
+                self.max_batch_size, 'max_batch_size'
+            )
+        else:
+            max_batch_frames = self.max_val_batch_frames
+            max_batch_size = self.max_val_batch_size
         sampler = DsBatchSampler(
             dataset,
-            max_batch_frames=self.max_batch_frames if training else self.max_val_batch_frames,
-            max_batch_size=self.max_batch_size if training else self.max_val_batch_size,
+            max_batch_frames=max_batch_frames,
+            max_batch_size=max_batch_size,
             num_replicas=self.num_replicas,
             rank=self.global_rank,
             sort_by_similar_size=hparams['sort_by_len'] if training else False,
@@ -113,6 +125,15 @@ class AllInOneTask(AcousticTask):
             pin_memory=True,
             persistent_workers=(hparams['ds_workers'] > 0)
         )
+
+    @classmethod
+    def _split_training_batch_limit(cls, total_limit, config_name):
+        if total_limit < cls.training_stream_count:
+            raise ValueError(
+                f'All-in-one training requires {config_name} >= '
+                f'{cls.training_stream_count}, got {total_limit}.'
+            )
+        return total_limit // cls.training_stream_count
 
     def train_dataloader(self):
         loaders = {

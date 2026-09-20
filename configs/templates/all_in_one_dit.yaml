@@ -142,8 +142,8 @@ T_start: 0.4
 T_start_infer: 0.4
 
 val_with_vocoder: false
-max_batch_frames: 768
-max_batch_size: 1
+max_batch_frames: 1536
+max_batch_size: 2
 max_val_batch_frames: 768
 max_val_batch_size: 1
 max_sample_frames: 768

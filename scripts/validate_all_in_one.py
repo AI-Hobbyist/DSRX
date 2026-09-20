@@ -106,6 +106,14 @@ def main():
     assert task.model.variance.variance_prediction_list == [
         'energy', 'breathiness', 'voicing', 'tension'
     ]
+    assert task._split_training_batch_limit(50000, 'max_batch_frames') == 25000
+    assert task._split_training_batch_limit(48, 'max_batch_size') == 24
+    try:
+        task._split_training_batch_limit(1, 'max_batch_size')
+    except ValueError as error:
+        assert 'max_batch_size >= 2' in str(error)
+    else:
+        raise AssertionError('Invalid all-in-one batch limit was accepted.')
 
     pitch_condition = torch.randn(1, 4, hparams['hidden_size'])
     pitch_prediction = task.model.variance.pitch_predictor(
