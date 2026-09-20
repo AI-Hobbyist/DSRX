@@ -106,6 +106,12 @@ def validate_checkpoint_gradients() -> None:
 
 
 def validate_muon_parameter_partition() -> None:
+    unmarked_modules = nn.Sequential(nn.Linear(8, 8), nn.Conv1d(8, 8, 3))
+    assert get_params_for_muon(unmarked_modules) == []
+    embedding = nn.Embedding(8, 8)
+    embedding.use_muon = True
+    assert get_params_for_muon(embedding) == []
+
     hparams.clear()
     hparams.update({"hidden_size": 8})
     model = DiT(
@@ -119,9 +125,19 @@ def validate_muon_parameter_partition() -> None:
         use_gradient_checkpointing=False,
     )
     muon_param_ids = {id(parameter) for parameter in get_params_for_muon(model)}
+    expected_muon_param_ids = {
+        id(linear.weight)
+        for block in model.blocks
+        for linear in (block.attn.qkv, block.attn.proj, block.mlp.fc1, block.mlp.fc2)
+    }
 
-    assert id(model.blocks[0].attn.qkv.weight) in muon_param_ids
-    assert id(model.blocks[0].mlp.fc1.weight) in muon_param_ids
+    assert muon_param_ids == expected_muon_param_ids
+    assert id(model.input_proj.weight) not in muon_param_ids
+    assert id(model.cond_proj.weight) not in muon_param_ids
+    assert all(
+        id(linear.weight) not in muon_param_ids
+        for linear in (model.time_mlp[0], model.time_mlp[2])
+    )
     assert id(model.output_proj.weight) not in muon_param_ids
     assert id(model.final_modulation[1].weight) not in muon_param_ids
     assert all(

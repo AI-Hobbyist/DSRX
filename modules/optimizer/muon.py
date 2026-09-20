@@ -111,7 +111,7 @@ def get_params_for_muon(model) -> List[Parameter]:
             if not param.requires_grad:
                 continue
             if (
-                    getattr(module, 'use_muon', True)
+                    getattr(module, 'use_muon', False)
                     and not isinstance(module, nn.Embedding)
                     and param.ndim >= 2
             ):

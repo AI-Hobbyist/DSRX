@@ -16,6 +16,8 @@ class DiTAttention(nn.Module):
         self.dropout = dropout
         self.qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
+        self.qkv.use_muon = True
+        self.proj.use_muon = True
         inv_freq = 1.0 / (
             rope_base ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
         )
@@ -63,6 +65,8 @@ class DiTMLP(nn.Module):
         hidden_dim = int(dim * mlp_ratio)
         self.fc1 = nn.Linear(dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, dim)
+        self.fc1.use_muon = True
+        self.fc2.use_muon = True
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
