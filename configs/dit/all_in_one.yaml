@@ -1,0 +1,93 @@
+base_config:
+  - configs/dit/acoustic.yaml
+  - configs/dit/variance.yaml
+  - configs/dit/_reset_all_in_one_training.yaml
+
+task_cls: training.all_in_one_task.AllInOneTask
+binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
+
+all_in_one:
+  enabled: true
+
+# The same raw corpus is independently binarized into acoustic and variance
+# representations under binary_data_dir/{acoustic,variance}.
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+all_phonemes: [AP, SP]
+extra_phonemes: []
+merged_phoneme_groups: []
+
+datasets:
+  - raw_data_dir: data/opencpop
+    speaker: opencpop
+    spk_id: 0
+    language: zh
+    artifact_level: 0
+    test_prefixes:
+      - prefix_1
+      - prefix_2
+
+binary_data_dir: data/opencpop/binary-all-in-one
+binarization_args:
+  shuffle: true
+  num_workers: 0
+  prefer_ds: false
+  allow_missing_phonemes: false
+
+use_lang_id: false
+num_lang: 1
+use_spk_id: false
+num_spk: 1
+use_artifact_embed: false
+
+# Acoustic conditioning includes every supported variance curve.
+use_energy_embed: true
+use_breathiness_embed: true
+use_voicing_embed: true
+use_tension_embed: true
+use_key_shift_embed: true
+use_speed_embed: true
+
+# All-in-one always forces these six predictors on at task construction.
+predict_dur: true
+predict_pitch: true
+predict_energy: true
+predict_breathiness: true
+predict_voicing: true
+predict_tension: true
+
+val_with_vocoder: false
+max_batch_frames: 768
+max_batch_size: 1
+max_val_batch_frames: 768
+max_val_batch_size: 1
+max_sample_frames: 768
+accumulate_grad_batches: 8
+clip_grad_norm: 1.0
+
+optimizer_args:
+  optimizer_cls: torch.optim.AdamW
+  lr: 0.0003
+  weight_decay: 0.0
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.SequentialLR
+  schedulers:
+    - cls: torch.optim.lr_scheduler.LinearLR
+      start_factor: 0.01
+      end_factor: 1.0
+      total_iters: 1000
+    - cls: torch.optim.lr_scheduler.StepLR
+      step_size: 5000
+      gamma: 0.8
+  milestones: [1000]
+
+lora:
+  enabled: false
+  rank: 8
+  alpha: 16
+  target_modules:
+    - '^acoustic\.diffusion\.(denoise_fn|velocity_fn)\.blocks\.[0-9]+\.(attn\.(qkv|proj)|mlp\.(fc1|fc2))$'
+    - '^variance\.(pitch_predictor|variance_predictor)\.(denoise_fn|velocity_fn)\.blocks\.[0-9]+\.(attn\.(qkv|proj)|mlp\.(fc1|fc2))$'
+  base_ckpt: null
+  train_bias: false
+  merge_before_export: true

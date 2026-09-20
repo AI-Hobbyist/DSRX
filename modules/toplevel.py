@@ -29,6 +29,17 @@ class ShallowDiffusionOutput:
         self.diff_out = diff_out
 
 
+class DiffSingerAllInOne(CategorizedModule):
+    @property
+    def category(self):
+        return 'all_in_one'
+
+    def __init__(self, vocab_size, out_dims):
+        super().__init__()
+        self.acoustic = DiffSingerAcoustic(vocab_size=vocab_size, out_dims=out_dims)
+        self.variance = DiffSingerVariance(vocab_size=vocab_size)
+
+
 class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
     @property
     def category(self):

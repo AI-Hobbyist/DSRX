@@ -242,7 +242,7 @@ class VarianceTask(BaseTask):
         )
 
     # noinspection PyAttributeOutsideInit
-    def build_losses_and_metrics(self):
+    def build_losses_and_metrics(self, register_metrics=True):
         if self.predict_dur:
             dur_hparams = hparams['dur_prediction_args']
             self.dur_loss = DurationLoss(
@@ -253,8 +253,9 @@ class VarianceTask(BaseTask):
                 lambda_sdur=dur_hparams['lambda_sdur_loss']
             )
             self.register_validation_loss('dur_loss')
-            self.register_validation_metric('rhythm_corr', RhythmCorrectness(tolerance=0.05))
-            self.register_validation_metric('ph_dur_acc', PhonemeDurationAccuracy(tolerance=0.2))
+            if register_metrics:
+                self.register_validation_metric('rhythm_corr', RhythmCorrectness(tolerance=0.05))
+                self.register_validation_metric('ph_dur_acc', PhonemeDurationAccuracy(tolerance=0.2))
         if self.predict_pitch:
             if self.diffusion_type == 'ddpm':
                 self.pitch_loss = DiffusionLoss(loss_type=hparams['main_loss_type'])
@@ -265,8 +266,9 @@ class VarianceTask(BaseTask):
             else:
                 raise ValueError(f'Unknown diffusion type: {self.diffusion_type}')
             self.register_validation_loss('pitch_loss')
-            self.register_validation_metric('pitch_acc', RawCurveAccuracy(tolerance=0.5))
-            self.register_validation_metric('pitch_r2', RawCurveR2Score())
+            if register_metrics:
+                self.register_validation_metric('pitch_acc', RawCurveAccuracy(tolerance=0.5))
+                self.register_validation_metric('pitch_r2', RawCurveR2Score())
         if self.predict_variances:
             if self.diffusion_type == 'ddpm':
                 self.var_loss = DiffusionLoss(loss_type=hparams['main_loss_type'])
@@ -277,11 +279,13 @@ class VarianceTask(BaseTask):
             else:
                 raise ValueError(f'Unknown diffusion type: {self.diffusion_type}')
             self.register_validation_loss('var_loss')
-            for name in self.variance_prediction_list:
-                self.register_validation_metric(f'{name}_r2', RawCurveR2Score())            
+            if register_metrics:
+                for name in self.variance_prediction_list:
+                    self.register_validation_metric(f'{name}_r2', RawCurveR2Score())
 
-    def run_model(self, sample, infer=False, modules=None):
+    def run_model(self, sample, infer=False, modules=None, model=None):
         modules = AUX_MODULES if modules is None else set(modules)
+        model = self.model if model is None else model
         spk_ids = sample['spk_ids'] if self.use_spk_id else None  # [B,]
         languages = sample['languages'] if self.use_lang_id else None  # [B,]
         txt_tokens = sample['tokens']  # [B, T_ph]
@@ -317,7 +321,7 @@ class VarianceTask(BaseTask):
                     for v_name in self.variance_prediction_list
                 }
 
-        output = self.model(
+        output = model(
             txt_tokens, languages=languages,
             midi=midi, ph2word=ph2word,
             ph_dur=ph_dur, mel2ph=mel2ph,
@@ -361,17 +365,18 @@ class VarianceTask(BaseTask):
                     [name in selected_variances for name in self.variance_prediction_list],
                     device=mel2ph.device,
                     dtype=torch.bool
-                )[None, None, :]
-                variance_non_padding = non_padding & variance_mask
+                )[None, :]
                 if self.diffusion_type == 'ddpm':
                     var_x_recon, var_noise = variances_pred
                     var_loss = self.var_loss(
-                        var_x_recon, var_noise, non_padding=variance_non_padding
+                        var_x_recon, var_noise,
+                        non_padding=non_padding, feature_mask=variance_mask
                     )
                 elif self.diffusion_type == 'reflow':
                     var_v_pred, var_v_gt, t = variances_pred
                     var_loss = self.var_loss(
-                        var_v_pred, var_v_gt, t=t, non_padding=variance_non_padding
+                        var_v_pred, var_v_gt, t=t,
+                        non_padding=non_padding, feature_mask=variance_mask
                     )
                 else:
                     raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")

@@ -117,11 +117,14 @@ def main() -> None:
     variance = load_config(ROOT / "configs/dit/config_variance.yaml")
     acoustic_4090 = load_config(ROOT / "configs/dit/config_acoustic_4090_10h.yaml")
     variance_4090 = load_config(ROOT / "configs/dit/config_variance_4090_10h.yaml")
+    all_in_one = load_config(ROOT / "configs/dit/all_in_one.yaml")
     legacy_acoustic = load_config(ROOT / "configs/original/acoustic.yaml")
     legacy_variance = load_config(ROOT / "configs/original/variance.yaml")
 
     assert legacy_acoustic["backbone_type"] == "lynxnet2"
     assert legacy_variance["pitch_prediction_args"]["backbone_type"] == "lynxnet2"
+    assert legacy_acoustic["all_in_one"]["enabled"] is False
+    assert legacy_variance["all_in_one"]["enabled"] is False
 
     validate_common(acoustic)
     assert acoustic["backbone_type"] == "dit"
@@ -135,6 +138,26 @@ def main() -> None:
     assert variances["backbone_type"] == "dit"
     validate_dit_args("pitch", pitch["backbone_args"], 256)
     validate_dit_args("variances", variances["backbone_args"], 256)
+
+    validate_common(all_in_one)
+    validate_acoustic_optimization(all_in_one)
+    assert all_in_one["all_in_one"]["enabled"] is True
+    assert all_in_one["task_cls"] == "training.all_in_one_task.AllInOneTask"
+    assert all_in_one["binarizer_cls"] == "preprocessing.all_in_one_binarizer.AllInOneBinarizer"
+    assert all(
+        all_in_one[f"predict_{name}"] is True
+        for name in ("dur", "pitch", "energy", "breathiness", "voicing", "tension")
+    )
+    assert all_in_one["backbone_type"] == "dit"
+    validate_dit_args("all_in_one.acoustic", all_in_one["backbone_args"], 384)
+    validate_dit_args(
+        "all_in_one.pitch", all_in_one["pitch_prediction_args"]["backbone_args"], 256
+    )
+    validate_dit_args(
+        "all_in_one.variances",
+        all_in_one["variances_prediction_args"]["backbone_args"],
+        256
+    )
 
     assert acoustic_4090["backbone_args"] == acoustic["backbone_args"]
     validate_acoustic_optimization(acoustic_4090)

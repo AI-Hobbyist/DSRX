@@ -20,8 +20,10 @@ matplotlib.use('Agg')
 
 
 class AcousticDataset(BaseDataset):
-    def __init__(self, prefix, preload=False):
-        super(AcousticDataset, self).__init__(prefix, hparams['dataset_size_key'], preload)
+    def __init__(self, prefix, preload=False, data_dir=None):
+        super(AcousticDataset, self).__init__(
+            prefix, hparams['dataset_size_key'], preload, data_dir=data_dir
+        )
         self.required_variances = {}  # key: variance name, value: padding value
         if hparams['use_energy_embed']:
             self.required_variances['energy'] = 0.0
@@ -119,7 +121,8 @@ class AcousticTask(BaseTask):
             raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
         self.register_validation_loss('mel_loss')
 
-    def run_model(self, sample, infer=False):
+    def run_model(self, sample, infer=False, model=None):
+        model = self.model if model is None else model
         txt_tokens = sample['tokens']  # [B, T_ph]
         target = sample['mel']  # [B, T_s, M]
         mel2ph = sample['mel2ph']  # [B, T_s]
@@ -140,7 +143,7 @@ class AcousticTask(BaseTask):
             languages = sample['languages']
         else:
             languages = None
-        output: ShallowDiffusionOutput = self.model(
+        output: ShallowDiffusionOutput = model(
             txt_tokens, mel2ph=mel2ph, f0=f0, **variances,
             key_shift=key_shift, speed=speed,
             spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
@@ -154,7 +157,7 @@ class AcousticTask(BaseTask):
 
             if output.aux_out is not None:
                 aux_out = output.aux_out
-                norm_gt = self.model.aux_decoder.norm_spec(target)
+                norm_gt = model.aux_decoder.norm_spec(target)
                 aux_mel_loss = self.lambda_aux_mel_loss * self.aux_mel_loss(aux_out, norm_gt)
                 losses['aux_mel_loss'] = aux_mel_loss
 

@@ -57,8 +57,12 @@ tension_smooth: SinusoidalSmoothingConv1d = None
 
 
 class AcousticBinarizer(BaseBinarizer):
-    def __init__(self):
-        super().__init__(data_attrs=ACOUSTIC_ITEM_ATTRIBUTES)
+    def __init__(self, datasets=None, binary_data_dir=None):
+        super().__init__(
+            datasets=datasets,
+            data_attrs=ACOUSTIC_ITEM_ATTRIBUTES,
+            binary_data_dir=binary_data_dir
+        )
         self.artifact_levels = []
         for ds_id, dataset in enumerate(self.datasets):
             artifact_level = int(dataset.get('artifact_level', 0))
