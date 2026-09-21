@@ -4,6 +4,7 @@ import random
 import tempfile
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import torch
@@ -196,13 +197,37 @@ def main():
     assert acoustic_infer.model is task.model.acoustic
 
     validation_sample = variance_sample()
-    validation_sample['indices'] = torch.tensor([hparams['num_valid_plots']])
-    variance_validation_losses, variance_validation_weight = task._run_validation_step(
-        VarianceTask._validation_step, cast(Any, object()),
-        validation_sample, batch_idx=0, model=task.model.variance, plot=False
-    )
+    validation_sample['indices'] = torch.tensor([0])
+    validation_sample['uv'] = torch.zeros_like(validation_sample['pitch'], dtype=torch.bool)
+    validation_metadata = {
+        key: [value.shape[1]]
+        for key, value in validation_sample.items()
+        if isinstance(value, torch.Tensor) and value.ndim > 1
+    }
+    validation_metadata['ph_texts'] = ['a b c']
+    plotted = []
+    original_plot_dur = VarianceTask.plot_dur
+    original_plot_pitch = VarianceTask.plot_pitch
+    original_plot_curve = VarianceTask.plot_curve
+    try:
+        setattr(VarianceTask, 'plot_dur', lambda self, *args, **kwargs: plotted.append('dur'))
+        setattr(VarianceTask, 'plot_pitch', lambda self, *args, **kwargs: plotted.append('pitch'))
+        setattr(
+            VarianceTask, 'plot_curve',
+            lambda self, *args, **kwargs: plotted.append(kwargs['curve_name'])
+        )
+        variance_validation_losses, variance_validation_weight = task._run_validation_step(
+            VarianceTask._validation_step,
+            cast(Any, SimpleNamespace(metadata=validation_metadata)),
+            validation_sample, batch_idx=0, model=task.model.variance, plot=True
+        )
+    finally:
+        setattr(VarianceTask, 'plot_dur', original_plot_dur)
+        setattr(VarianceTask, 'plot_pitch', original_plot_pitch)
+        setattr(VarianceTask, 'plot_curve', original_plot_curve)
     assert set(variance_validation_losses) == {'dur_loss', 'pitch_loss', 'var_loss'}
     assert variance_validation_weight == validation_sample['size']
+    assert plotted == ['dur', 'pitch', 'energy', 'breathiness', 'voicing', 'tension']
 
     acoustic_dataset = cast(Any, object())
     variance_dataset = cast(Any, object())

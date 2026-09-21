@@ -424,7 +424,8 @@ class VarianceTask(BaseTask):
                         self.valid_metrics['ph_dur_acc'].update(
                             pdur_pred=pred_dur, pdur_target=gt_dur, ph2word=ph2word, mask=mask
                         )
-                        self.plot_dur(
+                        VarianceTask.plot_dur(
+                            self,
                             data_idx, gt_dur, pred_dur,
                             txt=self.valid_dataset.metadata['ph_texts'][data_idx].split()
                         )
@@ -435,7 +436,8 @@ class VarianceTask(BaseTask):
                         mask = (sample_get('mel2ph', i, data_idx) > 0) & ~sample_get('uv', i, data_idx)
                         self.valid_metrics['pitch_acc'].update(pred=pred_pitch, target=gt_pitch, mask=mask)
                         self.valid_metrics['pitch_r2'].update(pred=pred_pitch, target=gt_pitch, mask=mask)
-                        self.plot_pitch(
+                        VarianceTask.plot_pitch(
+                            self,
                             data_idx,
                             gt_pitch=gt_pitch,
                             pred_pitch=pred_pitch,
@@ -451,7 +453,8 @@ class VarianceTask(BaseTask):
                         pred_variances = variances_preds[name][i][:variance_len].unsqueeze(0)
                         mask = (sample_get('mel2ph', i, data_idx) > 0) & ~sample_get('uv', i, data_idx)
                         self.valid_metrics[f'{name}_r2'].update(pred=pred_variances, target=gt_variances, mask=mask)
-                        self.plot_curve(
+                        VarianceTask.plot_curve(
+                            self,
                             data_idx,
                             gt_curve=gt_variances,
                             pred_curve=pred_variances,
