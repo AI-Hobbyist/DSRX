@@ -16,8 +16,6 @@ class DiTAttention(nn.Module):
         self.dropout = dropout
         self.qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
-        self.qkv.use_muon = True
-        self.proj.use_muon = True
         inv_freq = 1.0 / (
             rope_base ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
         )
@@ -41,6 +39,8 @@ class DiTAttention(nn.Module):
         qkv = self.qkv(x).reshape(batch, frames, 3, self.num_heads, self.head_dim)
         q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
         q, k = self._apply_rope(q, k)
+        q = F.normalize(q, dim=-1) * math.sqrt(self.head_dim)
+        k = F.normalize(k, dim=-1) * math.sqrt(self.head_dim)
 
         attention_mask = None
         if valid_mask is not None:
@@ -65,8 +65,6 @@ class DiTMLP(nn.Module):
         hidden_dim = int(dim * mlp_ratio)
         self.fc1 = nn.Linear(dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, dim)
-        self.fc1.use_muon = True
-        self.fc2.use_muon = True
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -85,7 +83,6 @@ class DiTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim, eps=layer_norm_eps, elementwise_affine=False)
         self.mlp = DiTMLP(dim, mlp_ratio, dropout=mlp_dropout)
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
-        self.adaLN_modulation[1].use_muon = False
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
@@ -93,9 +90,15 @@ class DiTBlock(nn.Module):
     def _modulate(x, shift, scale):
         return x * (1 + scale[:, None, :]) + shift[:, None, :]
 
+    @staticmethod
+    def _stabilize_modulation(modulation):
+        return torch.tanh(modulation)
+
     def forward(self, x, time_embedding, valid_mask):
         shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp = (
-            self.adaLN_modulation(time_embedding).chunk(6, dim=-1)
+            self._stabilize_modulation(
+                self.adaLN_modulation(time_embedding)
+            ).chunk(6, dim=-1)
         )
         x = x + gate_attn[:, None, :] * self.attn(
             self._modulate(self.norm1(x), shift_attn, scale_attn), valid_mask
@@ -162,8 +165,6 @@ class DiT(nn.Module):
         )
         self.final_modulation = nn.Sequential(nn.SiLU(), nn.Linear(num_channels, num_channels * 2))
         self.output_proj = nn.Linear(num_channels, input_dims)
-        self.final_modulation[1].use_muon = False
-        self.output_proj.use_muon = False
         nn.init.zeros_(self.final_modulation[1].weight)
         nn.init.zeros_(self.final_modulation[1].bias)
         nn.init.zeros_(self.output_proj.weight)
@@ -253,7 +254,7 @@ class DiT(nn.Module):
             else:
                 x = block(x, time_embedding, valid_mask)
 
-        shift, scale = self.final_modulation(time_embedding).chunk(2, dim=-1)
+        shift, scale = torch.tanh(self.final_modulation(time_embedding)).chunk(2, dim=-1)
         x = self.final_norm(x) * (1 + scale[:, None, :]) + shift[:, None, :]
         x = self.output_proj(x) * query_mask
         return x.transpose(1, 2).reshape(batch, num_feats, in_dims, frames)

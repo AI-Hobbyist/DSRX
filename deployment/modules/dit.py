@@ -33,6 +33,8 @@ class DiTAttentionONNX(nn.Module):
         sin = angles.sin().repeat_interleave(2, dim=1)[None, None, :, :]
         q = q * cos + self._rotate_half(q) * sin
         k = k * cos + self._rotate_half(k) * sin
+        q = F.normalize(q, dim=-1) * math.sqrt(self.head_dim)
+        k = F.normalize(k, dim=-1) * math.sqrt(self.head_dim)
 
         scores = torch.matmul(q, k.permute(0, 1, 3, 2)) * (self.head_dim ** -0.5)
         scores = scores.masked_fill(~valid_mask[:, None, None, :], -1e4)
@@ -55,9 +57,15 @@ class DiTBlockONNX(nn.Module):
     def _modulate(x, shift, scale):
         return x * (1 + scale[:, None, :]) + shift[:, None, :]
 
+    @staticmethod
+    def _stabilize_modulation(modulation):
+        return torch.tanh(modulation)
+
     def forward(self, x, time_embedding, valid_mask):
         shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp = (
-            self.adaLN_modulation(time_embedding).chunk(6, dim=1)
+            self._stabilize_modulation(
+                self.adaLN_modulation(time_embedding)
+            ).chunk(6, dim=1)
         )
         x = x + gate_attn[:, None, :] * self.attn(
             self._modulate(self.norm1(x), shift_attn, scale_attn), valid_mask
@@ -106,7 +114,7 @@ class DiTONNXAdapter(nn.Module):
         for block in self.blocks:
             x = block(x, time_embedding, valid_mask)
 
-        shift, scale = self.final_modulation(time_embedding).chunk(2, dim=1)
+        shift, scale = torch.tanh(self.final_modulation(time_embedding)).chunk(2, dim=1)
         x = self.final_norm(x) * (1 + scale[:, None, :]) + shift[:, None, :]
         x = self.output_proj(x) * query_mask
         return x.transpose(1, 2).reshape(batch, self.n_feats, self.in_dims, frames)

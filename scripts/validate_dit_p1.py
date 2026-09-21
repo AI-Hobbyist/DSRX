@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from modules.backbones import build_backbone, run_backbone
-from modules.backbones.dit import DiT
+from modules.backbones.dit import DiT, DiTAttention, DiTBlock
 from modules.core.ddpm import GaussianDiffusion
 from modules.core.reflow import RectifiedFlow
 from modules.losses import DiffusionLoss, RectifiedFlowLoss
@@ -103,6 +103,25 @@ def validate_checkpoint_gradients() -> None:
     output = model(spec, torch.tensor([1.0]), cond, valid_mask=torch.ones(1, 3, dtype=torch.bool))
     output.sum().backward()
     assert model.blocks[0].attn.qkv.weight.grad is not None
+
+
+def validate_stability_guards() -> None:
+    attention = DiTAttention(8, 2, dropout=0.0).eval()
+    with torch.no_grad():
+        attention.qkv.bias.zero_()
+    inputs = torch.randn(2, 7, 8)
+    valid_mask = torch.ones(2, 7, dtype=torch.bool)
+    baseline = attention(inputs, valid_mask)
+    with torch.no_grad():
+        attention.qkv.weight[:16].mul_(100.0)
+    scaled = attention(inputs, valid_mask)
+    torch.testing.assert_close(scaled, baseline, rtol=1e-4, atol=1e-5)
+
+    modulation = torch.tensor([[-100.0, -2.0, 0.0, 2.0, 100.0]])
+    stabilized = DiTBlock._stabilize_modulation(modulation)
+    assert torch.all(stabilized >= -1.0)
+    assert torch.all(stabilized <= 1.0)
+    torch.testing.assert_close(stabilized, torch.tanh(modulation))
 
 
 def validate_muon_parameter_partition() -> None:
@@ -359,6 +378,7 @@ def main() -> None:
     torch.manual_seed(1234)
     validate_shapes_and_masks()
     validate_checkpoint_gradients()
+    validate_stability_guards()
     validate_muon_parameter_partition()
     validate_factory_and_legacy_dispatch()
     validate_core_mask_propagation()
