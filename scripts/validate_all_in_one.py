@@ -195,6 +195,15 @@ def main():
     assert variance_infer.model is task.model.variance
     assert acoustic_infer.model is task.model.acoustic
 
+    validation_sample = variance_sample()
+    validation_sample['indices'] = torch.tensor([hparams['num_valid_plots']])
+    variance_validation_losses, variance_validation_weight = task._run_validation_step(
+        VarianceTask._validation_step, cast(Any, object()),
+        validation_sample, batch_idx=0, model=task.model.variance, plot=False
+    )
+    assert set(variance_validation_losses) == {'dur_loss', 'pitch_loss', 'var_loss'}
+    assert variance_validation_weight == validation_sample['size']
+
     acoustic_dataset = cast(Any, object())
     variance_dataset = cast(Any, object())
     task.acoustic_valid_dataset = acoustic_dataset
