@@ -100,6 +100,8 @@ def main():
     task = AllInOneTask()
     assert task.val_with_variance_enabled is False
     assert task.model.category == 'all_in_one'
+    assert task.get_submodule('valid_losses') is task.valid_losses
+    assert task.get_submodule('valid_metrics') is task.valid_metrics
     assert hparams['predict_dur'] is True
     assert task.model.variance.predict_dur is True
     assert task.model.acoustic.diffusion.use_shallow_diffusion is True

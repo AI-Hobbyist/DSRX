@@ -13,6 +13,7 @@ import utils
 matplotlib.use('Agg')
 
 import torch
+import torch.nn as nn
 import torch.utils.data
 from torchmetrics import Metric, MeanMetric
 import lightning.pytorch as pl
@@ -112,8 +113,8 @@ class BaseTask(pl.LightningModule):
                     raise RuntimeError(f'DiT LoRA setup failed: {e}') from e
                 print(f'| warn: LoRA injection failed: {e}')
 
-        self.valid_losses: Dict[str, Metric] = {}
-        self.valid_metrics: Dict[str, Metric] = {}
+        self.valid_losses = nn.ModuleDict()
+        self.valid_metrics = nn.ModuleDict()
 
     @staticmethod
     def _uses_dit_backend() -> bool:
