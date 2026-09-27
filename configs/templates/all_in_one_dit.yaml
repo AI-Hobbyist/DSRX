@@ -75,7 +75,7 @@ use_tension_embed: true
 use_key_shift_embed: true
 use_speed_embed: true
 
-# All-in-one always forces these six predictors on at task construction.
+# Enable only the predictors needed for this experiment.
 predict_dur: true
 predict_pitch: true
 predict_energy: true

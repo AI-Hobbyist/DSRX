@@ -34,23 +34,25 @@ class AllInOneTask(AcousticTask):
             validate_variance_validation_config(
                 self.val_with_variance, hparams['dictionaries']
             )
+            if not hparams['predict_dur'] or not hparams['predict_pitch']:
+                raise ValueError(
+                    'val_with_variance requires predict_dur and predict_pitch.'
+                )
             hparams['val_with_vocoder'] = True
-
-        hparams['predict_dur'] = True
-        hparams['predict_pitch'] = True
-        hparams['predict_energy'] = True
-        hparams['predict_breathiness'] = True
-        hparams['predict_voicing'] = True
-        hparams['predict_tension'] = True
 
         self.use_spk_id = hparams['use_spk_id']
         self.use_lang_id = hparams['use_lang_id']
-        self.predict_dur = True
-        self.lambda_dur_loss = hparams['lambda_dur_loss']
-        self.predict_pitch = True
-        self.lambda_pitch_loss = hparams['lambda_pitch_loss']
-        self.variance_prediction_list = ['energy', 'breathiness', 'voicing', 'tension']
-        self.predict_variances = True
+        self.predict_dur = hparams['predict_dur']
+        if self.predict_dur:
+            self.lambda_dur_loss = hparams['lambda_dur_loss']
+        self.predict_pitch = hparams['predict_pitch']
+        if self.predict_pitch:
+            self.lambda_pitch_loss = hparams['lambda_pitch_loss']
+        self.variance_prediction_list = [
+            name for name in ('energy', 'breathiness', 'voicing', 'tension')
+            if hparams[f'predict_{name}']
+        ]
+        self.predict_variances = bool(self.variance_prediction_list)
         self.lambda_var_loss = hparams['lambda_var_loss']
         self.all_in_one_samplers = {}
         self.variance_validation_language = None
