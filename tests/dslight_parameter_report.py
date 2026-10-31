@@ -18,10 +18,11 @@ def configure(light):
                 'time_embed_dim': 64, 'dropout_rate': 0.0}
         hparams['backbone_type'] = 'dslight'
         hparams['backbone_args'] = args.copy()
+        variance_args = dict(args, num_channels=128, num_layers=8, dilation_cycle=[1, 3, 9, 27])
         hparams['pitch_prediction_args']['backbone_type'] = 'dslight'
-        hparams['pitch_prediction_args']['backbone_args'] = args.copy()
+        hparams['pitch_prediction_args']['backbone_args'] = variance_args.copy()
         hparams['variances_prediction_args']['backbone_type'] = 'dslight'
-        hparams['variances_prediction_args']['backbone_args'] = args.copy()
+        hparams['variances_prediction_args']['backbone_args'] = variance_args.copy()
         hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'dslight'
         hparams['shallow_diffusion_args']['aux_decoder_args'] = {
             'num_channels': 256, 'num_layers': 8, 'kernel_size': 7,
