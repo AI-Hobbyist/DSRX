@@ -1,0 +1,42 @@
+# Experimental all-in-one quality-oriented size reference (<50 MB FP32 weights).
+# It has not passed real training or quality validation.
+base_config:
+  - configs/dslight/all_in_one_50mb.yaml
+
+hidden_size: 224
+backbone_args:
+  num_channels: 160
+  num_layers: 10
+  kernel_size: 7
+  dilation_cycle: [1, 3, 9, 27]
+  cond_channels: 224
+  time_embed_dim: 64
+  dropout_rate: 0.0
+
+shallow_diffusion_args:
+  aux_decoder_args:
+    num_channels: 192
+    num_layers: 6
+    kernel_size: 7
+    dilation_cycle: [1, 3, 9]
+    dropout_rate: 0.0
+
+pitch_prediction_args:
+  backbone_args:
+    num_channels: 112
+    num_layers: 6
+    kernel_size: 7
+    dilation_cycle: [1, 3, 9]
+    cond_channels: 224
+    time_embed_dim: 64
+    dropout_rate: 0.0
+
+variances_prediction_args:
+  backbone_args:
+    num_channels: 112
+    num_layers: 6
+    kernel_size: 7
+    dilation_cycle: [1, 3, 9]
+    cond_channels: 224
+    time_embed_dim: 64
+    dropout_rate: 0.0

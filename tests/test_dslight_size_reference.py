@@ -14,9 +14,15 @@ def parameter_count(model):
 
 
 class AllInOneSizeReferenceTest(unittest.TestCase):
-    def test_full_model_forward_and_backward(self):
+    def test_compact_full_model_forward_and_backward(self):
+        self.check_configuration('configs/dslight/all_in_one_50mb.yaml')
+
+    def test_quality_full_model_forward_and_backward(self):
+        self.check_configuration('configs/dslight/all_in_one_quality_50mb.yaml')
+
+    def check_configuration(self, config):
         torch.set_num_threads(1)
-        set_hparams(config='configs/dslight/all_in_one_50mb.yaml', print_hparams=False)
+        set_hparams(config=config, print_hparams=False)
         model = DiffSingerAllInOne(vocab_size=len(load_phoneme_dictionary()), out_dims=128)
         self.assertLess(parameter_count(model) * 4, 50_000_000)
         with tempfile.TemporaryDirectory() as directory:
