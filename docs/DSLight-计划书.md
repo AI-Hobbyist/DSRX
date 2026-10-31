@@ -381,6 +381,27 @@ P4 实测（小样本边界）：使用本机 OpenCpop 7 条训练、1 条验证
 
 P4 导出：在 `diffs`（PyTorch 2.11、ONNX 1.16.2、ONNX Runtime 1.23）直接调用 `DiffSingerAcousticExporter`，使用 60 步短训权重成功生成完整 opset 15 声学图；ONNX checker 通过，CPU Runtime 在 16 和 64 帧输出有限 `[1,T,128]`。前后级独立动态帧数值比较通过。`scripts/export.py` 入口要求 PyTorch 1.13，当前环境未验证该 CLI 入口。人工抽听依用户要求跳过，没有主观质量结论。
 
+P4 扩展验证（未达质量门槛）：同一 OpenCpop 数据源的 20 条未用于训练的录音，按 mel 元素加权计算。7 条训练、600 步时，基线 L1 为 1.05026，质量档为 1.21546（高 15.7%）；进一步加参至前级 256 通道、8 层（2,414,976 参数）后为 1.15272（高 9.8%）。将训练扩展至 107 条、两组同样训练 600 步后，基线为 1.40710，加参档为 1.81484（高 29.0%）。这些短训数据不证明最终收敛效果，但当前更广的验证集未通过 ≤5% 门槛；P4 质量验收仍未完成，需使用充分训练的可比权重和代表性验证集重测。未把扩展配置设为默认。
+
+P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选将声学、pitch 和 variance 后级设为 C=192/N=12，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
+
+| 模块 | 旧配置参数 | DSLight 候选参数 |
+| --- | ---: | ---: |
+| 声学编码器 | 5,273,408 | 5,273,408 |
+| 声学前级 | 14,008,960 | 2,414,976 |
+| 声学后级 | 40,619,136 | 2,389,376 |
+| 声学合计 | 59,901,504 | 10,077,760 |
+| variance 编码器（含 duration） | 6,619,201 | 6,619,201 |
+| pitch 后级 | 10,282,560 | 2,364,736 |
+| variance 后级 | 5,831,856 | 2,358,576 |
+| variance 其余条件嵌入 | 3,584 | 3,584 |
+| variance 合计 | 22,737,201 | 11,346,097 |
+| 分开训练两模型之和 / all-in-one 总量 | 82,638,705 | 21,423,857 |
+
+这组 all-in-one 实现含独立声学和 variance 子模型，因此同配置下参数量等于分别构造的两者之和，并非共享编码器。词表、启用项或维度改变会改变数值。
+
+训练显存参考：107 条样本测试中，RTX 5060 Laptop、FP32 AdamW、batch=1、209–688 帧、无梯度累积，`torch.cuda.max_memory_allocated` 声学旧配置为 1,233,726,976 字节（约 1,176.6 MiB），加参 DSLight 声学为 249,120,768 字节（约 237.6 MiB）；不包括 CUDA reserved 和其他进程。仅按 FP32 参数、梯度及 AdamW 两份状态合计 16 字节/参数估算下限：旧声学/variance/all-in-one 分别约 914/347/1261 MiB，DSLight 候选分别约 154/173/327 MiB。该下限不含激活、临时张量、框架及显存碎片，不能作为实际训练峰值；variance 和 all-in-one 的真实峰值尚未测量，需按实际 batch、帧长、精度、优化器、梯度累积和设备实测。
+
 GPU 推理优化验证：RTX 5060、`diffs` 环境下，`optimize_model_for_inference` 成功 trace / freeze `velocity_fn`，16、32 帧 warmup 通过，24 帧输出与原模型在 `rtol=1e-4, atol=1e-5` 内一致；全模型 8 个 Linear 被选择性 FP16 化，后级时间投影不足默认阈值，卷积保持原精度。复测脚本为 `tests/dslight_gpu_trace.py`。
 
 | 阶段 | 内容 | 完成条件（可验证） |

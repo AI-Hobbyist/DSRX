@@ -2,6 +2,8 @@
 # run scripts/binarize.py followed by scripts/train.py with your copied file.
 base_config:
   - configs/dslight/acoustic.yaml
+  # Uncomment for the larger experimental auxiliary decoder:
+  # - configs/dslight/quality.yaml
 
 dictionaries:
   zh: dictionaries/opencpop-extension.txt
