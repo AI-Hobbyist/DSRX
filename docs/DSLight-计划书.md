@@ -365,9 +365,21 @@ P2 验证：`conda activate diffs`，执行 `python -m unittest discover -s test
 
 P3 验证：`diffs` 环境运行 `python -m unittest discover -s tests -p test_dslight_training_smoke.py`，2 项通过。合成固定批次训练 20 步，辅助损失 0.05332→0.01273，主损失 11.56686→0.78647；验证了权重路径、有限梯度和旧配置前反向。另以本机 OpenCpop 的 7 条训练、1 条验证录音预处理，运行真实 Lightning 训练 60 步，训练日志中两项损失整体下降；这是短程 smoke，不代表收敛或音质合格。可编辑模板为 `configs/dslight/template.yaml`。
 
-P3 小样本设备校准：RTX 5060 Laptop GPU，FP32，batch=1、num_workers=0、accumulate_grad_batches=1，同一 7 条录音（351–583 帧），各运行 60 步、丢弃前 10 步；基线 `lynxnet2+convnext` 为 13.57 it/s、6289 frames/s、峰值 1,230,164,480 bytes，`dslight+dslight` 为 10.81 it/s、5183 frames/s、峰值 186,021,376 bytes。中位数分别按步时间及逐步帧吞吐计算。该小批量实测 DSLight 未加速；计划原有 4090 / 16k–50k 帧预测不适用于此设备和批量，尚未获得对应规模的实测，不能跨设备外推。基准脚本为 `tests/dslight_benchmark.py`，本地配置位于忽略目录 `data/dslight_smoke/`，数据并非项目交付。
+P3 小样本设备校准：RTX 5060 Laptop GPU，FP32，batch=1、num_workers=0、accumulate_grad_batches=1，同一 7 条录音（351–583 帧），各运行 60 步、丢弃前 10 步；基线 `lynxnet2+convnext` 为 13.57 it/s、6289 frames/s、峰值 1,230,164,480 bytes，`dslight+dslight` 为 10.81 it/s、5183 frames/s、峰值 186,021,376 bytes。中位数分别按步时间及逐步帧吞吐计算。第一次测量该小批量 DSLight 未加速；重复测量结果分别为 17.61 和 14.75 it/s，速度受运行条件波动影响；计划原有 4090 / 16k–50k 帧预测不适用于此设备和批量，尚未获得对应规模的实测，不能跨设备外推。基准脚本为 `tests/dslight_benchmark.py`，本地配置位于忽略目录 `data/dslight_smoke/`，数据并非项目交付。
 
-P4 人工抽听：依用户要求跳过，未产生主观质量结论。实际 checkpoint、验证集和 vocoder 未提供，真实质量对比尚未验证。
+P4 实测（小样本边界）：使用本机 OpenCpop 7 条训练、1 条验证录音，RTX 5060 Laptop GPU 上 FP32、相同数据加载顺序和 AdamW 设置训练。下表的 L1 是单条验证录音的自然对数 mel 误差；60 步与 600 步是不同短程对照，不代表收敛模型或全数据集效果。
+
+| 配置 / 训练步数 | 前级 mel L1 | 最终 mel L1 | CPU 单线程声学 RTF（20 步） |
+| --- | ---: | ---: | ---: |
+| `lynxnet2+convnext` / 60 | 1.17810 | 2.84107 | 1.6334 |
+| `dslight+dslight` 折中 / 60 | 1.31350 | 3.58102 | 0.1421 |
+| `dslight+dslight` 质量优先前级 / 60 | 1.29083 | 3.57560 | 0.1581 |
+| `lynxnet2+convnext` / 600 | 1.19784 | 未测 | 未测 |
+| `dslight+dslight` 质量优先前级 / 600 | 1.22433 | 未测 | 未测 |
+
+60 步时折中和质量前级分别比基线高约 11.5% 和 9.6%，不达 5% 门槛；600 步质量前级高约 2.21%，在该单条验证样本通过该数值门槛。该样本不足以证明泛化质量，正式使用须以代表性验证集和收敛权重重测。RTF 仅计声学模型，不含 vocoder；CPU 线程数为 1，取热身后 3 次中位数。质量档配置 `configs/dslight/quality.yaml` 与数据模板组合使用。
+
+P4 导出：在 `diffs`（PyTorch 2.11、ONNX 1.16.2、ONNX Runtime 1.23）直接调用 `DiffSingerAcousticExporter`，使用 60 步短训权重成功生成完整 opset 15 声学图；ONNX checker 通过，CPU Runtime 在 16 和 64 帧输出有限 `[1,T,128]`。前后级独立动态帧数值比较通过。`scripts/export.py` 入口要求 PyTorch 1.13，当前环境未验证该 CLI 入口。人工抽听依用户要求跳过，没有主观质量结论。
 
 | 阶段 | 内容 | 完成条件（可验证） |
 | --- | --- | --- |
