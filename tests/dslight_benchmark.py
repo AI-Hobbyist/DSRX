@@ -22,6 +22,7 @@ parser.add_argument('model', choices=('legacy', 'dslight'))
 parser.add_argument('config', nargs='?', default='data/dslight_smoke/config.yaml')
 parser.add_argument('--steps', type=int, default=60)
 parser.add_argument('--aux-decoder-grad', type=float)
+parser.add_argument('--learning-rate', type=float, default=0.0001)
 parser.add_argument('--save-weights', type=Path)
 args = parser.parse_args()
 if args.steps <= 10:
@@ -49,7 +50,7 @@ task = SimpleNamespace(
     lambda_aux_mel_loss=hparams['lambda_aux_mel_loss'], aux_mel_loss=nn.L1Loss(),
     mel_loss=RectifiedFlowLoss(loss_type=hparams['main_loss_type'], log_norm=hparams['main_loss_log_norm']),
 )
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)
+optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 torch.cuda.reset_peak_memory_stats()
 times = []
 frames = []
@@ -79,6 +80,7 @@ if args.save_weights is not None:
 result = {
     'model': args.model, 'gpu': torch.cuda.get_device_name(), 'precision': 'float32',
     'steps': args.steps, 'warmup': 10, 'workers': 0, 'accumulate_grad_batches': 1,
+    'learning_rate': args.learning_rate,
     'batch_size': 1, 'median_it_per_s': 1 / statistics.median(times),
     'median_frames_per_s': statistics.median(f / t for f, t in zip(frames, times)),
     'max_memory_allocated': torch.cuda.max_memory_allocated(),
