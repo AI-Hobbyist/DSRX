@@ -385,6 +385,8 @@ P4 扩展验证（未达质量门槛）：同一 OpenCpop 数据源的 20 条未
 
 P4 质量诊断：基于前述 107 条训练 / 20 条验证、3,000 步权重，原始完整模型前级 L1 分别为 1.02351 / 1.27218。交叉输入另一模型编码器输出后，旧编码器 + DSLight 前级为 4.53547，DSLight 编码器 + 旧前级为 1.55056；交叉组合存在分布不匹配，不能单独据此归因。进一步固定**同一个旧模型编码器**，在相同缓存条件上分别从头训练旧前级与 C=256/N=8 的 DSLight 前级各 1,500 步（AdamW 1e-4），20 条验证集 L1 为 1.00726 / 1.05335（差约 4.6%；一次独立重复的 DSLight 值为 1.05246）。该控制实验表明在固定条件下差距较小，提示联合训练条件值得进一步调查；它不等同于 DSLight 全模型训练结果，也不解除 P4 质量门槛。可用 `tests/dslight_frozen_encoder_probe.py --config <配置> --weights <旧模型 state_dict>` 复核，需匹配的数据和权重。
 
+P4 联合训练梯度对照：在相同 107 条训练 / 20 条验证录音、3,000 步、FP32 AdamW 1e-4 和相同数据顺序下，将 C=256/N=8 DSLight 前级的 `aux_decoder_grad` 从 0.1 提至 1.0，前级 L1 从 1.27218 降至 1.10516，但仍比旧组合 1.02351 高约 8.0%，未达 ≤5% 门槛。固定随机种子按帧加权测量的验证主损失 L2：旧组合 0.24231、DSLight 原梯度 0.97587、梯度 1.0 为 0.97524；主损失差距仍在，此处不据此前级指标宣称质量达标。结果仅代表该数据与训练时长。`tests/dslight_benchmark.py` 支持 `--steps`、`--aux-decoder-grad` 和 `--save-weights`；`tests/dslight_quality_compare.py` 可在指定数据与权重上复核前级及主损失。
+
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 
 | 模块 | 旧配置：参数 / FP32 权重 | DSLight 候选：参数 / FP32 权重 |
