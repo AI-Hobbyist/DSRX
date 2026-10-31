@@ -404,6 +404,24 @@ M 表示百万参数；权重体积按 FP32 每参数 4 字节、1 MiB = 1,048,5
 
 训练显存参考：107 条样本测试中，RTX 5060 Laptop、FP32 AdamW、batch=1、209–688 帧、无梯度累积，`torch.cuda.max_memory_allocated` 声学旧配置为 1,233,726,976 字节（约 1,176.6 MiB），加参 DSLight 声学为 249,120,768 字节（约 237.6 MiB）；不包括 CUDA reserved 和其他进程。仅按 FP32 参数、梯度及 AdamW 两份状态合计 16 字节/参数估算下限：旧声学/variance/all-in-one 分别约 914/347/1261 MiB，DSLight 候选分别约 154/124/277 MiB。该下限不含激活、临时张量、框架及显存碎片，不能作为实际训练峰值；variance 和 all-in-one 的真实峰值尚未测量，需按实际 batch、帧长、精度、优化器、梯度累积和设备实测。
 
+### 50 MB 内 all-in-one 体积参考（实验配置）
+
+`configs/dslight/all_in_one_50mb.yaml` 是可复制修改的配置参考，以 50,000,000 字节作为更严格的上限，**不涉及 SV 格式或权重兼容**。保持全部 duration、pitch 和四项 variance 开关，词表 65；主隐藏维度 192，声学后级 C=128/N=8，声学前级 C=128/N=4，pitch 和 variance 后级均为 C=96/N=6，duration 预测器 C=128/N=3。构造结果如下：
+
+| 模块 | 参数量 | FP32 纯权重体积 |
+| --- | ---: | ---: |
+| 声学编码器 | 2.972 M | 11.34 MiB |
+| 声学前级 | 0.407 M | 1.55 MiB |
+| 声学后级 | 0.751 M | 2.87 MiB |
+| **声学合计** | **4.131 M** | **15.76 MiB** |
+| variance 编码器（含 duration） | 3.242 M | 12.37 MiB |
+| pitch 后级 | 0.331 M | 1.26 MiB |
+| variance 后级 | 0.328 M | 1.25 MiB |
+| **variance 合计（含其他嵌入）** | **3.903 M** | **14.89 MiB** |
+| **all-in-one 合计** | **8.033 M** | **30.65 MiB（32.13 MB）** |
+
+`test_dslight_size_reference.py` 验证模型的声学和 variance 合成前反向、有限梯度以及实际保存的 `state_dict` 小于 50,000,000 字节。词表、启用项和附加文件会改变体积；训练 checkpoint 若含优化器状态也会更大。该配置尚未经过真实训练、导出或质量验收，不能保证音质、训练性能或完整发行包小于 50 MB。FP32 AdamW 的参数、梯度、两个优化器状态合计下限约 122.6 MiB，未计激活及其他开销，真实训练峰值尚未测量。
+
 GPU 推理优化验证：RTX 5060、`diffs` 环境下，`optimize_model_for_inference` 成功 trace / freeze `velocity_fn`，16、32 帧 warmup 通过，24 帧输出与原模型在 `rtol=1e-4, atol=1e-5` 内一致；全模型 8 个 Linear 被选择性 FP16 化，后级时间投影不足默认阈值，卷积保持原精度。复测脚本为 `tests/dslight_gpu_trace.py`。
 
 | 阶段 | 内容 | 完成条件（可验证） |
