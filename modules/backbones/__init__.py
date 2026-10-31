@@ -1,5 +1,6 @@
 import torch.nn
 from modules.backbones.dit import DiT
+from modules.backbones.dslight import DSLightBackbone
 from modules.backbones.wavenet import WaveNet
 from modules.backbones.lynxnet import LYNXNet
 from modules.backbones.lynxnet2 import LYNXNet2
@@ -10,6 +11,7 @@ BACKBONES = {
     'lynxnet': LYNXNet,
     'lynxnet2': LYNXNet2,
     'dit': DiT,
+    'dslight': DSLightBackbone,
 }
 
 
@@ -18,6 +20,17 @@ def build_backbone(
         backbone_type: str, backbone_args: dict
 ) -> torch.nn.Module:
     backbone = BACKBONES[backbone_type]
+    if backbone_type == 'dslight':
+        if not isinstance(backbone_args, dict):
+            raise ValueError('DSLight requires backbone_args to be a mapping.')
+        allowed_args = {
+            'num_layers', 'num_channels', 'kernel_size', 'dilation_cycle',
+            'cond_channels', 'time_embed_dim', 'dropout_rate',
+        }
+        unknown_args = set(backbone_args) - allowed_args
+        if unknown_args:
+            raise ValueError(f'Unknown DSLight backbone arguments: {sorted(unknown_args)}')
+        return backbone(out_dims, num_feats, **backbone_args)
     if backbone_type == 'dit':
         if not isinstance(backbone_args, dict):
             raise ValueError('DiT requires backbone_args to be a mapping.')
