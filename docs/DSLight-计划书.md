@@ -361,6 +361,8 @@ P0 评审记录：用户确认使用门控输出与未门控分支拼接以保�
 
 P1 验证：`conda activate diffs`，执行 `python -m unittest discover -s tests -p test_dslight_backbone.py`，3 项通过；三档后级参数量实测分别为 759,424、2,389,376、5,177,472。测试覆盖多特征形状、无掩码分派、trace 等价及未知参数拒绝。
 
+P2 验证：`conda activate diffs`，执行 `python -m unittest discover -s tests -p test_dslight_aux.py`，3 项通过；三档前级参数量实测分别为 199,424、415,488、1,118,912。覆盖适配器训练和推理、反归一化、多特征形状、loss 注册及未知参数拒绝。
+
 | 阶段 | 内容 | 完成条件（可验证） |
 | --- | --- | --- |
 | **P0 契约冻结（本文档）** | 张量契约、注册方式、配置键、验收门槛 | 本文档评审通过；明确"默认不变" |
