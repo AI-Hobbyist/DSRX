@@ -1,0 +1,22 @@
+# Copy this template, replace the example paths and dataset metadata, then
+# run scripts/binarize.py followed by scripts/train.py with your copied file.
+base_config:
+  - configs/dslight/acoustic.yaml
+
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+num_lang: 1
+num_spk: 1
+use_lang_id: false
+use_spk_id: false
+
+datasets:
+  - raw_data_dir: data/my_dataset/raw
+    speaker: my_speaker
+    spk_id: 0
+    language: zh
+    test_prefixes: [validation_prefix]
+binary_data_dir: data/my_dataset/binary
+
+# Supply a compatible 44.1 kHz / hop 512 / 128 mel-bin vocoder checkpoint.
+vocoder_ckpt: ckpt/my_vocoder/model.ckpt

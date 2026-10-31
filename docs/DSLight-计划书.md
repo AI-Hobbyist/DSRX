@@ -363,6 +363,12 @@ P1 验证：`conda activate diffs`，执行 `python -m unittest discover -s test
 
 P2 验证：`conda activate diffs`，执行 `python -m unittest discover -s tests -p test_dslight_aux.py`，3 项通过；三档前级参数量实测分别为 199,424、415,488、1,118,912。覆盖适配器训练和推理、反归一化、多特征形状、loss 注册及未知参数拒绝。
 
+P3 验证：`diffs` 环境运行 `python -m unittest discover -s tests -p test_dslight_training_smoke.py`，2 项通过。合成固定批次训练 20 步，辅助损失 0.05332→0.01273，主损失 11.56686→0.78647；验证了权重路径、有限梯度和旧配置前反向。另以本机 OpenCpop 的 7 条训练、1 条验证录音预处理，运行真实 Lightning 训练 60 步，训练日志中两项损失整体下降；这是短程 smoke，不代表收敛或音质合格。可编辑模板为 `configs/dslight/template.yaml`。
+
+P3 小样本设备校准：RTX 5060 Laptop GPU，FP32，batch=1、num_workers=0、accumulate_grad_batches=1，同一 7 条录音（351–583 帧），各运行 60 步、丢弃前 10 步；基线 `lynxnet2+convnext` 为 13.57 it/s、6289 frames/s、峰值 1,230,164,480 bytes，`dslight+dslight` 为 10.81 it/s、5183 frames/s、峰值 186,021,376 bytes。中位数分别按步时间及逐步帧吞吐计算。该小批量实测 DSLight 未加速；计划原有 4090 / 16k–50k 帧预测不适用于此设备和批量，尚未获得对应规模的实测，不能跨设备外推。基准脚本为 `tests/dslight_benchmark.py`，本地配置位于忽略目录 `data/dslight_smoke/`，数据并非项目交付。
+
+P4 人工抽听：依用户要求跳过，未产生主观质量结论。实际 checkpoint、验证集和 vocoder 未提供，真实质量对比尚未验证。
+
 | 阶段 | 内容 | 完成条件（可验证） |
 | --- | --- | --- |
 | **P0 契约冻结（本文档）** | 张量契约、注册方式、配置键、验收门槛 | 本文档评审通过；明确"默认不变" |
