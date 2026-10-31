@@ -381,6 +381,8 @@ P4 实测（小样本边界）：使用本机 OpenCpop 7 条训练、1 条验证
 
 P4 导出：在 `diffs`（PyTorch 2.11、ONNX 1.16.2、ONNX Runtime 1.23）直接调用 `DiffSingerAcousticExporter`，使用 60 步短训权重成功生成完整 opset 15 声学图；ONNX checker 通过，CPU Runtime 在 16 和 64 帧输出有限 `[1,T,128]`。前后级独立动态帧数值比较通过。`scripts/export.py` 入口要求 PyTorch 1.13，当前环境未验证该 CLI 入口。人工抽听依用户要求跳过，没有主观质量结论。
 
+GPU 推理优化验证：RTX 5060、`diffs` 环境下，`optimize_model_for_inference` 成功 trace / freeze `velocity_fn`，16、32 帧 warmup 通过，24 帧输出与原模型在 `rtol=1e-4, atol=1e-5` 内一致；全模型 8 个 Linear 被选择性 FP16 化，后级时间投影不足默认阈值，卷积保持原精度。复测脚本为 `tests/dslight_gpu_trace.py`。
+
 | 阶段 | 内容 | 完成条件（可验证） |
 | --- | --- | --- |
 | **P0 契约冻结（本文档）** | 张量契约、注册方式、配置键、验收门槛 | 本文档评审通过；明确"默认不变" |
