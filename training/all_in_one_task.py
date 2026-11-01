@@ -14,7 +14,7 @@ from utils.hparams import hparams
 from utils.plot import spec_to_figure
 from utils.training_utils import DsBatchSampler
 from utils.variance_validation import (
-    load_validation_sources, validate_variance_validation_config
+    iter_validation_sources, validate_variance_validation_config
 )
 
 
@@ -226,24 +226,29 @@ class AllInOneTask(AcousticTask):
                 or not self.variance_validation_speakers
         ):
             return
-        language, source = load_validation_sources(
-            self.val_with_variance, hparams['dictionaries'],
-            previous_language=self.variance_validation_language
-        )
-        self.variance_validation_language = language
         timestep = hparams['hop_size'] / hparams['audio_sample_rate']
         for speaker_name, _ in self.variance_validation_speakers:
-            param = dict(source)
-            if hparams['use_spk_id']:
-                param['ph_spk_mix'] = param['spk_mix'] = {speaker_name: 1.0}
-            variance_batch = self.variance_validation_infer.preprocess_input(param)
-            durations, pitch, variances = self.variance_validation_infer.forward_model(
-                variance_batch
+            sources = iter_validation_sources(
+                self.val_with_variance, hparams['dictionaries'],
+                previous_language=self.variance_validation_language,
             )
-            if not torch.any(durations > 0):
+            for language, source in sources:
+                param = dict(source)
+                if hparams['use_spk_id']:
+                    param['ph_spk_mix'] = param['spk_mix'] = {speaker_name: 1.0}
+                variance_batch = self.variance_validation_infer.preprocess_input(param)
+                durations, pitch, variances = self.variance_validation_infer.forward_model(
+                    variance_batch
+                )
+                if (not torch.any(durations > 0) or pitch.shape[-1] == 0
+                        or any(value.shape[-1] == 0 for value in variances.values())):
+                    continue
+                self.variance_validation_language = language
+                break
+            else:
                 warnings.warn(
                     f'Skipping variance validation audio for {speaker_name}: '
-                    'predicted durations contain zero frames.',
+                    'all validation segments produced zero frames.',
                     UserWarning,
                 )
                 continue

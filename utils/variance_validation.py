@@ -118,3 +118,31 @@ def load_validation_sources(config, dictionaries, previous_language=None, rng=No
     if not valid_segments:
         raise ValueError(f'Variance validation source has no usable text segments: {path}')
     return language, rng.choice(valid_segments)
+
+def iter_validation_sources(config, dictionaries, previous_language=None, rng=None):
+    """Yield each valid segment once in randomized language and file order."""
+    rng = random if rng is None else rng
+    languages = [language for language, paths in config.items() if language != 'enable' and paths]
+    rng.shuffle(languages)
+    if len(languages) > 1 and previous_language in languages:
+        languages.remove(previous_language)
+        languages.append(previous_language)
+    for language in languages:
+        paths = list(config[language])
+        rng.shuffle(paths)
+        dictionary = load_language_dictionary(dictionaries[language])
+        for source_path in paths:
+            path = pathlib.Path(source_path)
+            with path.open(encoding='utf-8') as ds_file:
+                segments = json.load(ds_file)
+            if isinstance(segments, dict):
+                segments = [segments]
+            rng.shuffle(segments)
+            for segment in segments:
+                try:
+                    yield language, prepare_variance_segment(segment, language, dictionary)
+                except ValueError as error:
+                    warnings.warn(
+                        f'Skipping invalid variance validation segment from {path}: {error}',
+                        UserWarning,
+                    )
