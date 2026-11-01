@@ -131,8 +131,16 @@ class DiffSingerAcousticExporter(BaseExporter):
             if lora_cfg.get('merge_before_export', True):
                 merge_lora_into_model(model)
         else:
-            load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
-                      prefix_in_ckpt='model', strict=uses_dit_backend(hparams), device=self.device)
+            shallow_args = hparams.get('shallow_diffusion_args', {})
+            uses_dslight = (
+                model.backbone_type == 'dslight'
+                or (model.use_shallow_diffusion and shallow_args.get('aux_decoder_arch') == 'dslight')
+            )
+            load_ckpt(
+                model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
+                prefix_in_ckpt='model', strict=uses_dit_backend(hparams) or uses_dslight,
+                device=self.device,
+            )
         return model
 
     def export(self, path: Path):
