@@ -60,6 +60,28 @@ class DSLightCheckpointExportTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.export_model()
 
+    def test_dslight_backbone_is_rejected_for_legacy(self):
+        hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
+        hparams['shallow_diffusion_args']['aux_decoder_args'] = (
+            self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
+        )
+        self.write_checkpoint()
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        with self.assertRaises(RuntimeError):
+            self.export_model()
+
+    def test_dslight_aux_is_rejected_for_legacy(self):
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        self.write_checkpoint()
+        hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
+        hparams['shallow_diffusion_args']['aux_decoder_args'] = (
+            self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
+        )
+        with self.assertRaises(RuntimeError):
+            self.export_model()
+
     def test_legacy_configuration_still_loads(self):
         hparams['backbone_type'] = self.legacy_config['backbone_type']
         hparams['backbone_args'] = self.legacy_config['backbone_args']
@@ -68,6 +90,20 @@ class DSLightCheckpointExportTest(unittest.TestCase):
             self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
         )
         self.write_checkpoint()
+        self.assertEqual(self.export_model().backbone_type, 'lynxnet2')
+
+    def test_legacy_partial_checkpoint_remains_permissive(self):
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
+        hparams['shallow_diffusion_args']['aux_decoder_args'] = (
+            self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
+        )
+        self.write_checkpoint()
+        path = self.root / 'model_ckpt_steps_1.ckpt'
+        checkpoint = torch.load(path, map_location='cpu', weights_only=True)
+        checkpoint['state_dict'].pop('model.fs2.txt_embed.weight')
+        torch.save(checkpoint, path)
         self.assertEqual(self.export_model().backbone_type, 'lynxnet2')
 
     def test_legacy_aux_decoder_is_rejected_for_dslight(self):

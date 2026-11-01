@@ -395,7 +395,7 @@ P4 固定编码器后级对照：以旧组合 3,000 步权重的声学编码器�
 
 P4 输入直连消融（仅独立实验，未改正式模型）：在此前 107 条训练 / 20 条验证、FP32 AdamW 1e-4、600 步条件下，临时令 DSLight 后级输出为原输出减去当前频谱状态（无新增参数），验证前级 L1 / 主损失 L2 为 1.79637 / 0.85297；未改结构的 DSLight 为 1.81484 / 1.20865，旧组合为 1.40710 / 0.38589。该单次短训对照中主损失下降但仍高于旧组合，前级质量也未达标；实验不能证明根因或质量合格。训练与验证临时脚本及权重保留在本机忽略目录 `data/dslight_eval100/`，正式模型结构与默认配置未变。若拟调整已冻结契约，须先形成充分对照并取得用户确认。
 
-P4 权重隔离修复（部分）：非 LoRA 声学导出中，若显式启用 DSLight 后级或前级，使用严格 checkpoint 加载，拒绝旧后级或旧前级的错配；不改变旧架构导出的原非严格策略。`test_dslight_checkpoint_export.py` 在 `diffs` 中通过 5 项测试，覆盖匹配的 DSLight、旧后级错配、旧前级错配、仅前级 DSLight 错配及旧配置加载。反向从 DSLight checkpoint 导出为旧架构，以及 LoRA 路径仍需单独审计，不能据此宣称权重隔离全部完成。
+P4 权重隔离修复（部分）：非 LoRA 声学导出中，若显式启用 DSLight 后级或前级，使用严格 checkpoint 加载，拒绝旧后级或旧前级的错配；不改变旧架构导出的原非严格策略。`test_dslight_checkpoint_export.py` 在 `diffs` 中通过 5 项测试，覆盖匹配的 DSLight、旧后级错配、旧前级错配、仅前级 DSLight 错配及旧配置加载。后续以源 checkpoint 中 DSLight 前后级特征键拒绝反向导出为旧架构，并验证旧架构部分 checkpoint 仍按原宽松策略加载；共 8 项导出测试通过。该检查仅覆盖非 LoRA 声学导出，LoRA 及其他入口仍需单独审计，不能据此宣称权重隔离全部完成。
 
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 

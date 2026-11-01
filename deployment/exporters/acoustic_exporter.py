@@ -1,4 +1,5 @@
 ﻿import json
+import re
 from pathlib import Path
 from typing import List, Union, Tuple, Dict
 
@@ -86,6 +87,31 @@ class DiffSingerAcousticExporter(BaseExporter):
             if self.freeze_spk is not None:
                 self.model.fs2.register_buffer('frozen_spk_embed', self._perform_spk_mix(self.freeze_spk[1]))
 
+    def _reject_dslight_checkpoint_for_legacy(self):
+        """Keep legacy permissive loading while rejecting DSLight weights."""
+        work_dir = Path(hparams['work_dir'])
+        if work_dir.is_file():
+            checkpoint_path = work_dir
+        elif self.ckpt_steps is not None:
+            checkpoint_path = work_dir / f'model_ckpt_steps_{int(self.ckpt_steps)}.ckpt'
+        else:
+            candidates = [
+                path for path in work_dir.iterdir()
+                if path.is_file() and re.fullmatch(r'model_ckpt_steps_\d+\.ckpt', path.name)
+            ]
+            if not candidates:
+                return  # Let load_ckpt report the missing checkpoint.
+            checkpoint_path = max(candidates, key=lambda path: int(re.search(r'\d+', path.name).group()))
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        state = checkpoint.get('state_dict', {})
+        dslight_keys = (
+            'model.diffusion.velocity_fn.stem.0.weight',
+            'model.diffusion.denoise_fn.stem.0.weight',
+            'model.aux_decoder.decoder.input_projection.weight',
+        )
+        if any(key in state for key in dslight_keys):
+            raise RuntimeError('Cannot export a DSLight checkpoint using a legacy architecture.')
+
     def build_model(self) -> DiffSingerAcousticONNX:
         from utils.lora import (
             inject_lora, load_dit_lora_for_export, load_lora_state_dict,
@@ -136,6 +162,8 @@ class DiffSingerAcousticExporter(BaseExporter):
                 model.backbone_type == 'dslight'
                 or (model.use_shallow_diffusion and shallow_args.get('aux_decoder_arch') == 'dslight')
             )
+            if not uses_dit_backend(hparams) and not uses_dslight:
+                self._reject_dslight_checkpoint_for_legacy()
             load_ckpt(
                 model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
                 prefix_in_ckpt='model', strict=uses_dit_backend(hparams) or uses_dslight,
