@@ -399,6 +399,8 @@ P4 权重隔离修复（部分）：非 LoRA 声学导出中，若显式启用 D
 
 P4 调参记录：107 条训练 / 20 条验证、FP32 AdamW、600 步下，DSLight 加参前级（C=256/N=8）设置学习率 1.2e-3、`aux_decoder_grad=1.0`，前级 L1 / 后级主损失 L2 为 1.90650 / 1.00855；原组合学习率 6e-4 时为 1.71481 / 0.45182。两组学习率不同，是超参候选与原组合基线的短训比较，不是同超参实验；候选前级较基线高约 11.2%，后级主损失也更高，未达质量目标。权重位于本机忽略目录 `data/dslight_eval100/`，不能作为收敛或听感结论。
 
+P4 后级独立学习率实验：同一 107 条训练 / 20 条验证、600 步、FP32 AdamW，原组合统一学习率 1e-4；DSLight 组合将后级设为 6e-4、其他模块 1e-4、`aux_decoder_grad=1.0`。原组合前级 L1 / 后级主 L2 为 1.40710 / 0.38589，DSLight 为 1.75128 / 1.09855，均未达到以原组合为基线的 5% 目标。`tests/dslight_benchmark.py --backbone-learning-rate` 可复核该参数分组；两组优化器参数不同，结论限本短训实验。
+
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 
 | 模块 | 旧配置：参数 / FP32 权重 | DSLight 候选：参数 / FP32 权重 |
