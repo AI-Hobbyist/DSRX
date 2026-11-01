@@ -40,7 +40,7 @@ class AcousticSmokeTest(unittest.TestCase):
 
     def test_dslight_training_and_aux_weight(self):
         torch.manual_seed(123)
-        model, task, sample = self.make_case('configs/dslight/acoustic.yaml')
+        model, task, sample = self.make_case('configs/templates/config_acoustic_dslight.yaml')
         optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
         initial = self.losses(task, sample)
         task.lambda_aux_mel_loss *= 2

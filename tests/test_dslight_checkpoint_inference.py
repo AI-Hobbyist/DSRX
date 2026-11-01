@@ -18,7 +18,7 @@ class DSLightInferenceCheckpointTest(unittest.TestCase):
         torch.set_num_threads(1)
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
-        set_hparams(config='configs/dslight/template.yaml', print_hparams=False)
+        set_hparams(config='configs/templates/config_acoustic_dslight_quality.yaml', print_hparams=False)
         hparams['work_dir'] = str(self.root)
         hparams['exp_name'] = 'inference_checkpoint_test'
         self.light_config = copy.deepcopy(hparams)

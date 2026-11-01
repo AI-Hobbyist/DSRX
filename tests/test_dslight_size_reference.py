@@ -15,10 +15,10 @@ def parameter_count(model):
 
 class AllInOneSizeReferenceTest(unittest.TestCase):
     def test_compact_full_model_forward_and_backward(self):
-        self.check_configuration('configs/dslight/all_in_one_50mb.yaml')
+        self.check_configuration('configs/templates/all_in_one_dslight_50mb.yaml')
 
     def test_quality_full_model_forward_and_backward(self):
-        self.check_configuration('configs/dslight/all_in_one_quality_50mb.yaml')
+        self.check_configuration('configs/templates/all_in_one_dslight_quality_50mb.yaml')
         self.assertEqual(hparams['shallow_diffusion_args']['aux_decoder_grad'], 1.0)
 
     def check_configuration(self, config):

@@ -40,7 +40,7 @@
 | [声学模型装配](modules/toplevel.py#L58-L67)：`AuxDecoderAdaptor(in_dims=hparams['hidden_size'](256), out_dims=audio_num_mel_bins(128), num_feats=1, ...)` | `dslight` 前级默认 `in_dims=256, out_dims=128`；不要把 `hidden_size` 写死进模块 |
 | [声学前向](modules/toplevel.py#L104-L127)：推理时 `aux_mel_pred = aux_decoder(condition, infer=True)` 后按 `mel2ph>0` 置零；训练时用 `aux_decoder_grad` 做条件梯度混合 | 掩码与梯度混合逻辑**不变**；`dslight` 只需产出同形状张量 |
 | [后级张量契约](configs/dit/p0_baseline.yaml#L36-L44)：`spec [B,F,M,T]`、`diffusion_step [B]`、`condition [B,H,T]`、`output [B,F,M,T]`、`valid_mask [B,T]` | `dslight` 后级必须严格满足；`valid_mask` 由 `run_backbone()` 按 `supports_valid_mask` 决定是否传入 |
-| [配置位置](configs/original/acoustic.yaml#L78)：`backbone_type: 'lynxnet2'`；[浅扩散参数](configs/original/acoustic.yaml#L97-L106)：`aux_decoder_arch: convnext` / `aux_decoder_args` | 新配置**另建文件**（如 `configs/dslight/acoustic.yaml`），不改原文件 |
+| [配置位置](configs/original/acoustic.yaml#L78)：`backbone_type: 'lynxnet2'`；[浅扩散参数](configs/original/acoustic.yaml#L97-L106)：`aux_decoder_arch: convnext` / `aux_decoder_args` | 新配置**另建文件**（如 `configs/templates/config_acoustic_dslight.yaml`），不改原文件 |
 
 ### 2.1 现状参数账本（用于说明"为什么值得做可选档"）
 
@@ -191,7 +191,7 @@ condition[B,T,256] ─transpose─> [B,256,T]
 
 新增文件（**不改动 `configs/original/*.yaml`**）：
 
-`configs/dslight/acoustic.yaml`（示例片段）
+`configs/templates/config_acoustic_dslight.yaml`（示例片段）
 
 ```yaml
 backbone_type: 'dslight'
@@ -345,7 +345,7 @@ it/s = 1 / (每步 FLOP / 有效 GPU 算力 + 固定开销)
 | 2 | `modules/backbones/__init__.py` L8-L13 / L15 | 注册 `'dslight'`；为其加**严格参数白名单**（同 `dit` 分支） | 不要动其他键的行为 |
 | 3 | `modules/aux_decoder/dslight.py` | 新增 `DSLightAuxDecoder` | 只用基础算子（Conv1d / Sigmoid / Split / Add） |
 | 4 | `modules/aux_decoder/__init__.py` L7-L12 | 注册 `'dslight'` 到 `AUX_DECODERS` **与** `AUX_LOSSES`（沿用 `nn.L1Loss`） | 只加一组键，不改 `AuxDecoderAdaptor` |
-| 5 | `configs/dslight/*.yaml` | 新增实验配置 | 不修改 `configs/original/*` |
+| 5 | `configs/templates/*dslight*.yaml` | 新增实验配置 | 不修改 `configs/original/*` |
 | 6 | `deployment/exporters/acoustic_exporter.py` | 复用既有导出路径；确认 `dslight` 走 opset 15 基础算子分支 | 不得要求 SDPA / 自定义算子 |
 | 7 | `inference/optimization.py` | 复用 `_velocity_backbones` 的 trace 逻辑（依赖 `velocity_fn` 属性） | `dslight` 作为 velocity 后级时必须 trace 成功；FP16 选择性替换只作用于 `nn.Linear`，本设计以 Conv 为主，需确认无遗漏收益/风险 |
 | 8 | `tests/` | 新增单测：形状、参数量、mask 语义、注册与配置解析、ONNX trace | 无既有测试覆盖这些路径（见 CodeGraph 依赖结论） |
@@ -363,7 +363,7 @@ P1 验证：`conda activate diffs`，执行 `python -m unittest discover -s test
 
 P2 验证：`conda activate diffs`，执行 `python -m unittest discover -s tests -p test_dslight_aux.py`，3 项通过；三档前级参数量实测分别为 199,424、415,488、1,118,912。覆盖适配器训练和推理、反归一化、多特征形状、loss 注册及未知参数拒绝。
 
-P3 验证：`diffs` 环境运行 `python -m unittest discover -s tests -p test_dslight_training_smoke.py`，2 项通过。合成固定批次训练 20 步，辅助损失 0.05332→0.01273，主损失 11.56686→0.78647；验证了权重路径、有限梯度和旧配置前反向。另以本机 OpenCpop 的 7 条训练、1 条验证录音预处理，运行真实 Lightning 训练 60 步，训练日志中两项损失整体下降；这是短程 smoke，不代表收敛或音质合格。可编辑模板为 `configs/dslight/template.yaml`。
+P3 验证：`diffs` 环境运行 `python -m unittest discover -s tests -p test_dslight_training_smoke.py`，2 项通过。合成固定批次训练 20 步，辅助损失 0.05332→0.01273，主损失 11.56686→0.78647；验证了权重路径、有限梯度和旧配置前反向。另以本机 OpenCpop 的 7 条训练、1 条验证录音预处理，运行真实 Lightning 训练 60 步，训练日志中两项损失整体下降；这是短程 smoke，不代表收敛或音质合格。可编辑模板为 `configs/templates/config_acoustic_dslight_quality.yaml`。
 
 P3 小样本设备校准：RTX 5060 Laptop GPU，FP32，batch=1、num_workers=0、accumulate_grad_batches=1，同一 7 条录音（351–583 帧），各运行 60 步、丢弃前 10 步；基线 `lynxnet2+convnext` 为 13.57 it/s、6289 frames/s、峰值 1,230,164,480 bytes，`dslight+dslight` 为 10.81 it/s、5183 frames/s、峰值 186,021,376 bytes。中位数分别按步时间及逐步帧吞吐计算。第一次测量该小批量 DSLight 未加速；重复测量结果分别为 17.61 和 14.75 it/s，速度受运行条件波动影响；计划原有 4090 / 16k–50k 帧预测不适用于此设备和批量，尚未获得对应规模的实测，不能跨设备外推。基准脚本为 `tests/dslight_benchmark.py`，本地配置位于忽略目录 `data/dslight_smoke/`，数据并非项目交付。
 
@@ -377,7 +377,7 @@ P4 实测（小样本边界）：使用本机 OpenCpop 7 条训练、1 条验证
 | `lynxnet2+convnext` / 600 | 1.19784 | 未测 | 未测 |
 | `dslight+dslight` 质量优先前级 / 600 | 1.22433 | 未测 | 未测 |
 
-60 步时折中和质量前级分别比基线高约 11.5% 和 9.6%，不达 5% 门槛；600 步质量前级高约 2.21%，在该单条验证样本通过该数值门槛。该样本不足以证明泛化质量，正式使用须以代表性验证集和收敛权重重测。RTF 仅计声学模型，不含 vocoder；CPU 线程数为 1，取热身后 3 次中位数。质量档配置 `configs/dslight/quality.yaml` 与数据模板组合使用。
+60 步时折中和质量前级分别比基线高约 11.5% 和 9.6%，不达 5% 门槛；600 步质量前级高约 2.21%，在该单条验证样本通过该数值门槛。该样本不足以证明泛化质量，正式使用须以代表性验证集和收敛权重重测。RTF 仅计声学模型，不含 vocoder；CPU 线程数为 1，取热身后 3 次中位数。质量档配置 `configs/templates/config_acoustic_dslight_aux_quality.yaml` 与数据模板组合使用。
 
 P4 导出：在 `diffs`（PyTorch 2.11、ONNX 1.16.2、ONNX Runtime 1.23）直接调用 `DiffSingerAcousticExporter`，使用 60 步短训权重成功生成完整 opset 15 声学图；ONNX checker 通过，CPU Runtime 在 16 和 64 帧输出有限 `[1,T,128]`。前后级独立动态帧数值比较通过。`scripts/export.py` 入口要求 PyTorch 1.13，当前环境未验证该 CLI 入口。人工抽听依用户要求跳过，没有主观质量结论。
 
@@ -416,7 +416,7 @@ P4 声学 LoRA 加载补充：用户授权修改计划外的原生声学推理�
 | 20 步采样最终 mel L1 | 3.09603 | 1.19850 | -61.29% |
 | CPU 单线程声学 RTF（467 帧，20 步） | 2.1683 | 0.3278 | -84.88% |
 
-该次验证集上前级和后级指标均优于原组合，满足用户要求的相对原组合 ≤5% 劣化标准；这不是跨数据集、跨设备或主观听感结论。人工抽听依用户要求跳过。此前短训及其他档位结果保留为历史诊断，不作为本次主对照。可复制的数据模板为 `configs/dslight/template.yaml`，质量档模型配置为 `configs/dslight/acoustic_quality.yaml`；其中学习率与 weight decay 对应本次实验，学习率在 6,000 步内保持不变。模型与最终 mel 对照脚本分别为 `tests/dslight_quality_compare.py` 和 `tests/dslight_final_mel_compare.py`。
+该次验证集上前级和后级指标均优于原组合，满足用户要求的相对原组合 ≤5% 劣化标准；这不是跨数据集、跨设备或主观听感结论。人工抽听依用户要求跳过。此前短训及其他档位结果保留为历史诊断，不作为本次主对照。可复制的数据模板为 `configs/templates/config_acoustic_dslight_quality.yaml`，质量档模型配置为 `configs/templates/config_acoustic_dslight_quality.yaml`；其中学习率与 weight decay 对应本次实验，学习率在 6,000 步内保持不变。模型与最终 mel 对照脚本分别为 `tests/dslight_quality_compare.py` 和 `tests/dslight_final_mel_compare.py`。
 
 按 §6.6 单独运行 60 步、丢弃前 10 步，在同设备、FP32、batch=1、num_workers=0、accumulate_grad_batches=1、209–688 帧条件下，中位结果为：原组合 10.97 it/s、5,554 frames/s、峰值 allocated 1,176.6 MiB；质量档 9.41 it/s、4,340 frames/s、峰值 allocated 274.1 MiB。质量档此小批量测量未加速；此前 6,000 步全程对应 13.59 / 13.26 it/s，说明测量有波动。该设备和帧数不同于 §6 的 4090 / 16k–50k 估算，不能用作其校准或跨设备外推，目标设备大批量的预测仍待实测。
 
@@ -451,7 +451,7 @@ M 表示百万参数；权重体积按 FP32 每参数 4 字节、1 MiB = 1,048,5
 
 ### 50 MB 内 all-in-one 体积参考（实验配置）
 
-`configs/dslight/all_in_one_50mb.yaml` 是可复制修改的配置参考，以 50,000,000 字节作为更严格的上限，**不涉及 SV 格式或权重兼容**。保持全部 duration、pitch 和四项 variance 开关，词表 65；主隐藏维度 192，声学后级 C=128/N=8，声学前级 C=128/N=4，pitch 和 variance 后级均为 C=96/N=6，duration 预测器 C=128/N=3。构造结果如下：
+`configs/templates/all_in_one_dslight_50mb.yaml` 是可复制修改的配置参考，以 50,000,000 字节作为更严格的上限，**不涉及 SV 格式或权重兼容**。保持全部 duration、pitch 和四项 variance 开关，词表 65；主隐藏维度 192，声学后级 C=128/N=8，声学前级 C=128/N=4，pitch 和 variance 后级均为 C=96/N=6，duration 预测器 C=128/N=3。构造结果如下：
 
 | 模块 | 参数量 | FP32 纯权重体积 |
 | --- | ---: | ---: |
@@ -469,7 +469,7 @@ M 表示百万参数；权重体积按 FP32 每参数 4 字节、1 MiB = 1,048,5
 
 #### 接近 50 MB 的质量优先参考
 
-`configs/dslight/all_in_one_quality_50mb.yaml` 基于上述参考档增加容量，主隐藏维度为 224，声学后级 C=160/N=10、前级 C=192/N=6，pitch 和 variance 后级 C=112/N=6，duration 预测器 C=128/N=3；所有预测开关保持启用，词表 65。
+`configs/templates/all_in_one_dslight_quality_50mb.yaml` 基于上述参考档增加容量，主隐藏维度为 224，声学后级 C=160/N=10、前级 C=192/N=6，pitch 和 variance 后级 C=112/N=6，duration 预测器 C=128/N=3；所有预测开关保持启用，词表 65。
 
 | 模块 | 参数量 | FP32 纯权重体积 |
 | --- | ---: | ---: |
@@ -629,3 +629,15 @@ for name, b, a in [
 
 > 上述为静态估算；P1/P2 必须以 `sum(p.numel() for p in model.parameters())` 实测值写入验收记录，
 > 估算与实测不一致时以实测为准。
+
+### DSLight 配置模板位置
+
+DSLight 配置已集中到 `configs/templates/`，直接复制所需模板并填写数据集、词典及 vocoder 路径：
+
+- `config_acoustic_dslight.yaml`：折中声学档。
+- `config_acoustic_dslight_aux_quality.yaml`：较大前级声学档。
+- `config_acoustic_dslight_quality.yaml`：本计划质量对照所用的声学架构与优化器设置。
+- `all_in_one_dslight_50mb.yaml`：50 MB 内小体积参考。
+- `all_in_one_dslight_quality_50mb.yaml`：50 MB 内质量优先参考。
+
+这些模板直接继承 `configs/original/` 基础配置，并集中列出数据及训练设置。旧 `configs/dslight/` 路径已移除；自行创建的配置若通过 `base_config` 引用旧路径，需改成上述对应文件。完整 all-in-one 的真实训练与质量仍待验证。

@@ -1,0 +1,143 @@
+# DSLight balanced acoustic template; edit dataset and checkpoint paths.
+base_config:
+  - configs/original/acoustic.yaml
+
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+all_phonemes: [AP, SP]
+extra_phonemes: []
+merged_phoneme_groups: []
+
+datasets:
+  - raw_data_dir: data/xxx1/raw
+    speaker: speaker1
+    spk_id: 0
+    language: zh
+    artifact_level: 0  # 0 = clean, 1 = artifact-heavy
+    test_prefixes:
+      - wav1
+      - wav2
+      - wav3
+      - wav4
+      - wav5
+  - raw_data_dir: data/xxx2/raw
+    speaker: speaker2
+    spk_id: 1
+    language: zh
+    artifact_level: 1  # artifact-heavy example
+    test_prefixes:
+      - wav1
+      - wav2
+      - wav3
+      - wav4
+      - wav5
+
+binary_data_dir: data/xxx/binary
+binarization_args:
+  num_workers: 0
+  allow_missing_phonemes: false
+pe: parselmouth
+pe_ckpt: 'ckpt/rmvpe/model.pt'
+hnsep: vr
+hnsep_ckpt: 'ckpt/vr/model.pt'
+vocoder: NsfHifiGAN
+vocoder_ckpt: ckpt/nsf_hifigan_44.1k_hop512_128bin_2024.02/model.ckpt
+
+use_lang_id: false
+num_lang: 1
+use_spk_id: false
+num_spk: 1
+use_artifact_embed: false  # Enable to use dataset artifact_level labels.
+
+# NOTICE: before enabling variance embeddings, please read the docs at
+# https://github.com/openvpi/DiffSinger/tree/main/docs/BestPractices.md#choosing-variance-parameters
+use_energy_embed: false
+use_breathiness_embed: false
+use_voicing_embed: false
+use_tension_embed: false
+
+use_key_shift_embed: true
+use_speed_embed: true
+
+augmentation_args:
+  random_pitch_shifting:
+    enabled: true
+    range: [-5., 5.]
+    scale: 0.75
+  fixed_pitch_shifting:
+    enabled: false
+    targets: [-5., 5.]
+    scale: 0.5
+  random_time_stretching:
+    enabled: true
+    range: [0.5, 2.]
+    scale: 0.75
+
+# diffusion and shallow diffusion
+diffusion_type: reflow
+enc_ffn_kernel_size: 3
+enc_attention_type: normal
+use_rope: true
+use_shallow_diffusion: true
+T_start: 0.4
+T_start_infer: 0.4
+K_step: 300
+K_step_infer: 300
+backbone_type: dslight
+
+backbone_args:
+  num_channels: 192
+  num_layers: 12
+  kernel_size: 7
+  dropout_rate: 0.0
+  dilation_cycle:
+  - 1
+  - 3
+  - 9
+  - 27
+  - 81
+  cond_channels: 256
+  time_embed_dim: 64
+shallow_diffusion_args:
+  train_aux_decoder: true
+  train_diffusion: true
+  val_gt_start: false
+  aux_decoder_arch: dslight
+  aux_decoder_args:
+    num_channels: 128
+    num_layers: 4
+    kernel_size: 7
+    dropout_rate: 0.0
+    dilation_cycle:
+    - 1
+    - 3
+    - 9
+  aux_decoder_grad: 0.1
+lambda_aux_mel_loss: 0.2
+
+optimizer_args:
+  optimizer_cls: modules.optimizer.muon.Muon_AdamW
+  lr: 0.0006
+  muon_args:
+    weight_decay: 0.1
+  adamw_args:
+    weight_decay: 0.0
+lr_scheduler_args:
+  step_size: 5000
+  gamma: 0.8
+max_batch_frames: 16000
+max_batch_size: 24
+max_updates: 100000
+
+num_valid_plots: 10
+val_with_vocoder: true
+val_check_interval: 2000
+num_ckpt_keep: 5
+permanent_ckpt_start: 60000
+permanent_ckpt_interval: 10000
+pl_trainer_devices: 'auto'
+pl_trainer_precision: '16-mixed'
+
+lora:
+  enabled: false
+  base_ckpt: null

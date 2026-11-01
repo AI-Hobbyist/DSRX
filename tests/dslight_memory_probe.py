@@ -83,8 +83,8 @@ def main():
         parser.error('--frames must be a positive multiple of --phonemes')
     torch.set_num_threads(1)
     configs = (
-        'configs/dslight/all_in_one_50mb.yaml',
-        'configs/dslight/all_in_one_quality_50mb.yaml',
+        'configs/templates/all_in_one_dslight_50mb.yaml',
+        'configs/templates/all_in_one_dslight_quality_50mb.yaml',
     )
     for config in configs:
         for kind in ('acoustic', 'variance', 'all_in_one'):
