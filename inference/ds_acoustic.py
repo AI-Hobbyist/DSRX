@@ -22,7 +22,7 @@ from utils.lora import (
     inject_lora,
     load_dit_lora_for_inference,
     load_lora_state_dict,
-    uses_dit_backend,
+    uses_dit_backend, validate_dslight_lora_update,
 )
 from utils.hparams import hparams
 from utils.infer_utils import cross_fade, resample_align_curve, save_wav
@@ -85,6 +85,19 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                     device=self.device
                 )
                 return model.to(self.device)
+            shallow_args = hparams.get('shallow_diffusion_args', {})
+            uses_dslight = (
+                model.backbone_type == 'dslight'
+                or (model.use_shallow_diffusion and shallow_args.get('aux_decoder_arch') == 'dslight')
+            )
+            if uses_dslight:
+                base_checkpoint = lora_cfg.get('base_ckpt')
+                load_ckpt(
+                    model, base_checkpoint or hparams['work_dir'],
+                    ckpt_steps=None if base_checkpoint else ckpt_steps,
+                    prefix_in_ckpt='model', strict=True, device=self.device,
+                    prefer_inference=True,
+                )
             # Inject LoRA
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))
@@ -105,6 +118,15 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                     prefix_in_ckpt='model', strict=False, device=self.device,
                     prefer_inference=True
                 )
+            if uses_dslight:
+                from utils.training_utils import get_latest_checkpoint_path
+                latest_update = get_latest_checkpoint_path(pathlib.Path(hparams['work_dir']))
+                if latest_update:
+                    latest_path = pathlib.Path(latest_update)
+                    inference_path = latest_path.with_suffix('.infer.ckpt')
+                    if not latest_path.name.endswith('.infer.ckpt') and inference_path.is_file():
+                        latest_path = inference_path
+                    validate_dslight_lora_update(model, latest_path)
             # Load latest checkpoint from work_dir if present (full or LoRA-only)
             try:
                 import pathlib as _p

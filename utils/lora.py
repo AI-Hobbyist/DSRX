@@ -156,6 +156,30 @@ def load_lora_state_dict(
     return sorted(loaded)
 
 
+def validate_dslight_lora_update(model: nn.Module, checkpoint_path) -> None:
+    """Reject mismatched full weights or adapter tensors for a DSLight model."""
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    state = checkpoint.get('state_dict', checkpoint)
+    prefix = 'model.'
+    supplied = {key[len(prefix):]: value for key, value in state.items() if key.startswith(prefix)}
+    expected = model.state_dict()
+    base_weights_present = any(
+        key.endswith('.weight') and '.lora_' not in key for key in supplied
+    )
+    if not base_weights_present and not any(key.endswith(('.lora_A', '.lora_B')) for key in supplied):
+        raise RuntimeError('LoRA update contains neither base weights nor adapter tensors.')
+    if base_weights_present:
+        expected_base = {key for key in expected if '.lora_' not in key}
+        supplied_base = {key for key in supplied if '.lora_' not in key}
+        if expected_base != supplied_base:
+            raise RuntimeError('LoRA update contains incomplete or mismatched base weights.')
+    for key, value in supplied.items():
+        if key.endswith(('.lora_alpha', '.lora_r')):
+            continue
+        if key not in expected or value.shape != expected[key].shape:
+            raise RuntimeError(f'LoRA update tensor does not match the model: {key}')
+
+
 def uses_dit_backend(config: Dict) -> bool:
     backbone_types = [config.get('backbone_type')]
     for key in ('pitch_prediction_args', 'variances_prediction_args'):

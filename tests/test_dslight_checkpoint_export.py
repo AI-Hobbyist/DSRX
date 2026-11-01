@@ -1,4 +1,5 @@
 import copy
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ import torch
 from deployment.exporters.acoustic_exporter import DiffSingerAcousticExporter
 from modules.toplevel import DiffSingerAcoustic
 from utils.hparams import hparams, set_hparams
+from utils.lora import extract_lora_state_dict, inject_lora
 from utils.phoneme_utils import load_phoneme_dictionary
 
 
@@ -30,7 +32,9 @@ class DSLightCheckpointExportTest(unittest.TestCase):
     def write_checkpoint(self):
         model = DiffSingerAcoustic(vocab_size=len(load_phoneme_dictionary()), out_dims=128)
         state = {'model.' + key: value for key, value in model.state_dict().items()}
-        torch.save({'category': 'acoustic', 'state_dict': state}, self.root / 'model_ckpt_steps_1.ckpt')
+        path = self.root / 'model_ckpt_steps_1.ckpt'
+        torch.save({'category': 'acoustic', 'state_dict': state}, path)
+        return path
 
     def export_model(self):
         return DiffSingerAcousticExporter(device='cpu', cache_dir=self.root / 'cache').model
@@ -117,6 +121,50 @@ class DSLightCheckpointExportTest(unittest.TestCase):
             'merge_before_export': True,
         }
         self.assertEqual(self.export_model().backbone_type, 'dslight')
+
+    def test_lora_rejects_wrong_adapter_shape(self):
+        base_path = self.root / 'base.ckpt'
+        shutil.copy2(self.write_checkpoint(), base_path)
+        model = DiffSingerAcoustic(vocab_size=len(load_phoneme_dictionary()), out_dims=128)
+        inject_lora(model, rank=2, alpha=2, target_modules=['linear'])
+        adapter = extract_lora_state_dict(model)
+        adapter_key = next(key for key in adapter if key.endswith('.lora_A'))
+        adapter[adapter_key] = adapter[adapter_key][:-1]
+        torch.save({'category': 'acoustic', 'state_dict': adapter}, self.root / 'model_ckpt_steps_2.ckpt')
+        hparams['lora'] = {
+            'enabled': True, 'base_ckpt': str(base_path), 'target_modules': ['linear'],
+            'rank': 2, 'alpha': 2, 'merge_before_export': True,
+        }
+        with self.assertRaises(RuntimeError):
+            self.export_model()
+
+    def test_lora_adapter_only_update_loads(self):
+        base_path = self.root / 'base.ckpt'
+        shutil.copy2(self.write_checkpoint(), base_path)
+        model = DiffSingerAcoustic(vocab_size=len(load_phoneme_dictionary()), out_dims=128)
+        inject_lora(model, rank=2, alpha=2, target_modules=['linear'])
+        adapter = extract_lora_state_dict(model)
+        torch.save({'category': 'acoustic', 'state_dict': adapter}, self.root / 'model_ckpt_steps_2.ckpt')
+        hparams['lora'] = {
+            'enabled': True, 'base_ckpt': str(base_path), 'target_modules': ['linear'],
+            'rank': 2, 'alpha': 2, 'merge_before_export': True,
+        }
+        self.assertEqual(self.export_model().backbone_type, 'dslight')
+
+    def test_lora_rejects_wrong_latest_full_checkpoint(self):
+        base_path = self.root / 'base.ckpt'
+        shutil.copy2(self.write_checkpoint(), base_path)
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        self.write_checkpoint()
+        hparams.clear()
+        hparams.update(copy.deepcopy(self.light_config))
+        hparams['lora'] = {
+            'enabled': True, 'base_ckpt': str(base_path), 'target_modules': ['linear'],
+            'rank': 2, 'alpha': 2, 'merge_before_export': True,
+        }
+        with self.assertRaises(RuntimeError):
+            self.export_model()
 
     def test_lora_rejects_wrong_dslight_dimensions(self):
         self.write_checkpoint()

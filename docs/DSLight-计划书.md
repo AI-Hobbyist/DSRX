@@ -403,6 +403,8 @@ P4 后级独立学习率实验：同一 107 条训练 / 20 条验证、600 步�
 
 P4 LoRA 导出基座保护（部分）：对包含 DSLight 前级或后级的声学导出，在注入 LoRA 之前严格加载完整基座，拒绝旧架构及同架构尺寸不匹配；匹配 DSLight 基座可加载。`test_dslight_checkpoint_export.py` 共 11 项通过。此项只覆盖声学导出器的基座，后续 adapter、原生推理及 variance 等入口仍待单独审计，不能宣称所有 LoRA 路径已隔离。
 
+P4 声学 LoRA 加载补充：用户授权修改计划外的原生声学推理入口及必要共享校验工具。对显式选用 DSLight 的声学模型，原生推理与导出在注入 LoRA 前严格加载基座；后续完整权重或纯 adapter 在加载前检查键和尺寸，包含原生推理优先 `.infer.ckpt` 的情况。`test_dslight_checkpoint_export.py` 和 `test_dslight_checkpoint_inference.py` 共 22 项通过，覆盖匹配基座、架构 / 尺寸错配、错误后续完整权重、合法纯 adapter 和旧配置加载。该记录不覆盖 variance 或旧架构 LoRA 反向加载 DSLight 权重，仍需审计。
+
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 
 | 模块 | 旧配置：参数 / FP32 权重 | DSLight 候选：参数 / FP32 权重 |
