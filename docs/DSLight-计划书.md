@@ -424,6 +424,8 @@ P4 声学 LoRA 加载补充：用户授权修改计划外的原生声学推理�
 
 P4 旧声学 LoRA 反向检查：原生推理和导出在加载基座及后续更新时，拒绝可由特征键识别的 DSLight 完整权重和 DSLight 后级 adapter；旧架构匹配基座仍可加载。两类声学入口的 checkpoint 测试共 28 项通过。只包含共享层而没有 DSLight 特征键或架构元数据的历史纯 adapter 无法可靠判定来源，不能据此宣称所有旧 adapter 已完成隔离；variance 入口也不在本次验证范围内。
 
+P4 旧组合导出回归：在增加声学 checkpoint 隔离检查后，以同一数据上的原 `lynxnet2+convnext` 6,000 步权重执行完整 `DiffSingerAcousticExporter`，成功生成 opset 15 图；ONNX Runtime 1.23 CPU 在 16 / 64 帧运行，输出有限且形状为 `[1,T,128]`。`python -m unittest discover -s tests -p 'test_*.py'` 共 43 项通过。该回归覆盖本次旧配置和生成的 checkpoint，不能证明所有历史 checkpoint、纯 adapter 或其他模型入口均已验证。
+
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 
 | 模块 | 旧配置：参数 / FP32 权重 | DSLight 候选：参数 / FP32 权重 |
