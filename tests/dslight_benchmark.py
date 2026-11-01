@@ -21,6 +21,7 @@ parser = argparse.ArgumentParser(description='Benchmark acoustic training on a p
 parser.add_argument('model', choices=('legacy', 'dslight'))
 parser.add_argument('config', nargs='?', default='data/dslight_smoke/config.yaml')
 parser.add_argument('--steps', type=int, default=60)
+parser.add_argument('--batch-size', type=int, default=1)
 parser.add_argument('--aux-decoder-grad', type=float)
 parser.add_argument('--learning-rate', type=float, default=0.0001)
 parser.add_argument('--backbone-learning-rate', type=float)
@@ -28,6 +29,8 @@ parser.add_argument('--save-weights', type=Path)
 args = parser.parse_args()
 if args.steps <= 10:
     parser.error('--steps must exceed the 10-step warmup')
+if args.batch_size < 1:
+    parser.error('--batch-size must be positive')
 
 set_hparams(config=args.config, print_hparams=False)
 if args.model == 'legacy':
@@ -44,7 +47,7 @@ torch.manual_seed(123)
 torch.set_num_threads(1)
 device = torch.device('cuda')
 dataset = AcousticDataset('train')
-loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=dataset.collater)
+loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=dataset.collater)
 model = DiffSingerAcoustic(len(load_phoneme_dictionary()), 128).to(device).train()
 task = SimpleNamespace(
     model=model, required_variances=[], diffusion_type='reflow',
@@ -96,7 +99,7 @@ result = {
     'model': args.model, 'gpu': torch.cuda.get_device_name(), 'precision': 'float32',
     'steps': args.steps, 'warmup': 10, 'workers': 0, 'accumulate_grad_batches': 1,
     'learning_rate': args.learning_rate, 'backbone_learning_rate': args.backbone_learning_rate,
-    'batch_size': 1, 'median_it_per_s': 1 / statistics.median(times),
+    'batch_size': args.batch_size, 'median_it_per_s': 1 / statistics.median(times),
     'median_frames_per_s': statistics.median(f / t for f, t in zip(frames, times)),
     'max_memory_allocated': torch.cuda.max_memory_allocated(),
     'frame_range': [min(frames), max(frames)],
