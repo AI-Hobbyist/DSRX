@@ -115,7 +115,8 @@ class DiffSingerAcousticExporter(BaseExporter):
     def build_model(self) -> DiffSingerAcousticONNX:
         from utils.lora import (
             inject_lora, load_dit_lora_for_export, load_lora_state_dict,
-            merge_lora_into_model, uses_dit_backend, validate_dslight_lora_update
+            merge_lora_into_model, uses_dit_backend, validate_dslight_lora_update,
+            reject_dslight_lora_checkpoint
         )
         model = DiffSingerAcousticONNX(
             vocab_size=len(self.phoneme_dictionary),
@@ -144,6 +145,12 @@ class DiffSingerAcousticExporter(BaseExporter):
                         ckpt_steps=None if lora_cfg.get('base_ckpt') else self.ckpt_steps,
                         prefix_in_ckpt='model', strict=True, device=self.device,
                     )
+                else:
+                    base_checkpoint = lora_cfg.get('base_ckpt')
+                    reject_dslight_lora_checkpoint(
+                        base_checkpoint or hparams['work_dir'],
+                        ckpt_steps=None if base_checkpoint else self.ckpt_steps,
+                    )
                 rank = int(lora_cfg.get('rank', 8))
                 alpha = int(lora_cfg.get('alpha', 16))
                 targets = lora_cfg.get('target_modules', ['linear'])
@@ -155,11 +162,13 @@ class DiffSingerAcousticExporter(BaseExporter):
                 else:
                     load_ckpt(model, hparams['work_dir'], ckpt_steps=self.ckpt_steps,
                               prefix_in_ckpt='model', strict=False, device=self.device)
-                if uses_dslight:
-                    from utils.training_utils import get_latest_checkpoint_path
-                    latest_update = get_latest_checkpoint_path(Path(hparams['work_dir']))
-                    if latest_update:
+                from utils.training_utils import get_latest_checkpoint_path
+                latest_update = get_latest_checkpoint_path(Path(hparams['work_dir']))
+                if latest_update:
+                    if uses_dslight:
                         validate_dslight_lora_update(model, latest_update)
+                    else:
+                        reject_dslight_lora_checkpoint(latest_update)
                 from utils.training_utils import get_latest_checkpoint_path
                 latest = get_latest_checkpoint_path(Path(hparams['work_dir']))
                 if latest:

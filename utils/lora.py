@@ -156,6 +156,49 @@ def load_lora_state_dict(
     return sorted(loaded)
 
 
+def reject_dslight_lora_checkpoint(checkpoint_path, *, ckpt_steps=None, prefer_inference=False) -> None:
+    """Keep legacy LoRA loading permissive except for identifiable DSLight weights."""
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_dir():
+        if ckpt_steps is not None:
+            checkpoint_path = checkpoint_path / f'model_ckpt_steps_{int(ckpt_steps)}.ckpt'
+        else:
+            pattern = (
+                r'model_ckpt_steps_\d+(?:\.infer)?\.ckpt'
+                if prefer_inference else r'model_ckpt_steps_\d+\.ckpt'
+            )
+            candidates = [
+                path for path in checkpoint_path.iterdir()
+                if path.is_file() and re.fullmatch(pattern, path.name)
+            ]
+            if not candidates:
+                raise FileNotFoundError('No LoRA checkpoint found.')
+            checkpoint_path = max(
+                candidates,
+                key=lambda path: (
+                    int(re.search(r'\d+', path.name).group()),
+                    int(prefer_inference and path.name.endswith('.infer.ckpt')),
+                ),
+            )
+    if prefer_inference and not checkpoint_path.name.endswith('.infer.ckpt'):
+        inference_path = checkpoint_path.with_suffix('.infer.ckpt')
+        if inference_path.is_file():
+            checkpoint_path = inference_path
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    state = checkpoint.get('state_dict', checkpoint)
+    dslight_keys = (
+        'model.diffusion.velocity_fn.stem.0.weight',
+        'model.diffusion.denoise_fn.stem.0.weight',
+        'model.aux_decoder.decoder.input_projection.weight',
+        'model.diffusion.velocity_fn.time_projection.lora_A',
+        'model.diffusion.velocity_fn.time_projection.lora_B',
+        'model.diffusion.denoise_fn.time_projection.lora_A',
+        'model.diffusion.denoise_fn.time_projection.lora_B',
+    )
+    if any(key in state for key in dslight_keys):
+        raise RuntimeError('Cannot load DSLight weights into a legacy LoRA model.')
+
+
 def validate_dslight_lora_update(model: nn.Module, checkpoint_path) -> None:
     """Reject mismatched full weights or adapter tensors for a DSLight model."""
     checkpoint = torch.load(checkpoint_path, map_location='cpu')

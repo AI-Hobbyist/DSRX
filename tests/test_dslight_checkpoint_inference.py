@@ -96,6 +96,59 @@ class DSLightInferenceCheckpointTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.infer_model()
 
+    def test_legacy_lora_rejects_dslight_backbone_adapter(self):
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
+        hparams['shallow_diffusion_args']['aux_decoder_args'] = (
+            self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
+        )
+        base_path = self.root / 'base.ckpt'
+        shutil.copy2(self.write_checkpoint(), base_path)
+        legacy_target = copy.deepcopy(hparams)
+        hparams.clear()
+        hparams.update(copy.deepcopy(self.light_config))
+        model = DiffSingerAcoustic(vocab_size=len(load_phoneme_dictionary()), out_dims=128)
+        inject_lora(model, rank=2, alpha=2, target_modules=['linear'])
+        adapter = extract_lora_state_dict(model)
+        torch.save({'category': 'acoustic', 'state_dict': adapter}, self.root / 'model_ckpt_steps_2.ckpt')
+        hparams.clear()
+        hparams.update(legacy_target)
+        self.enable_lora(base_path)
+        with self.assertRaises(RuntimeError):
+            self.infer_model()
+
+    def test_legacy_lora_rejects_dslight_full_update(self):
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
+        hparams['shallow_diffusion_args']['aux_decoder_args'] = (
+            self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
+        )
+        base_path = self.root / 'base.ckpt'
+        shutil.copy2(self.write_checkpoint(), base_path)
+        legacy_target = copy.deepcopy(hparams)
+        hparams.clear()
+        hparams.update(copy.deepcopy(self.light_config))
+        shutil.copy2(self.write_checkpoint(), self.root / 'model_ckpt_steps_2.ckpt')
+        hparams.clear()
+        hparams.update(legacy_target)
+        self.enable_lora(base_path)
+        with self.assertRaises(RuntimeError):
+            self.infer_model()
+
+    def test_legacy_lora_rejects_dslight_base(self):
+        path = self.write_checkpoint()
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
+        hparams['shallow_diffusion_args']['aux_decoder_args'] = (
+            self.legacy_config['shallow_diffusion_args']['aux_decoder_args']
+        )
+        self.enable_lora(path)
+        with self.assertRaises(RuntimeError):
+            self.infer_model()
+
     def test_lora_rejects_wrong_latest_full_checkpoint(self):
         base_path = self.root / 'base.ckpt'
         shutil.copy2(self.write_checkpoint(), base_path)
