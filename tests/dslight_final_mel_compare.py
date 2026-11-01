@@ -49,6 +49,7 @@ def evaluate(name, weights, config, device, limit):
 def main():
     parser = argparse.ArgumentParser(description='Compare sampled mel outputs against validation targets.')
     parser.add_argument('--config', required=True)
+    parser.add_argument('--legacy-config', help='Baseline config when encoder settings differ')
     parser.add_argument('--legacy-weights', required=True)
     parser.add_argument('--dslight-weights', required=True)
     parser.add_argument('--device', default='cuda')
@@ -58,7 +59,8 @@ def main():
         parser.error('--limit cannot be negative')
     torch.set_num_threads(1)
     for name, weights in (('legacy', args.legacy_weights), ('dslight', args.dslight_weights)):
-        evaluate(name, weights, args.config, args.device, args.limit)
+        config = args.legacy_config if name == 'legacy' and args.legacy_config else args.config
+        evaluate(name, weights, config, args.device, args.limit)
 
 
 if __name__ == '__main__':
