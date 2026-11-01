@@ -14,6 +14,8 @@ backbone_args:
   dropout_rate: 0.0
 
 shallow_diffusion_args:
+  # Acoustic-only 6,000-step comparison used this gradient setting.
+  aux_decoder_grad: 1.0
   aux_decoder_args:
     num_channels: 192
     num_layers: 6

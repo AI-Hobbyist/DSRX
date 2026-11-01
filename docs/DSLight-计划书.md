@@ -496,7 +496,7 @@ FP32 纯参数为 47,150,980 字节；本次实际序列化 `state_dict` 为 47,
 
 该子配置在本次验证集上的前级及后级指标满足相对原组合最多劣化 5% 的标准；有限样本结果不证明完整 all-in-one、其他数据集或听感质量。6,000 步全程训练中位吞吐为原组合 13.59 it/s、参考档声学子配置 17.76 it/s，分别取各自热身后中位值；峰值 allocated 约 1,176.6 / 162.8 MiB。该测试设置不同于完整 all-in-one 显存探针，不可混为一谈。子配置的 6,000 步权重经完整声学 exporter 输出 opset 15 图，ONNX Runtime 1.23 CPU 在 16 / 64 帧输出有限 `[1,T,128]`。
 
-`tests/dslight_quality_compare.py` 和 `tests/dslight_final_mel_compare.py` 的 `--legacy-config` 允许基线和候选分别指定编码器维度；本机实验配置为忽略目录 `data/dslight_eval100/compact_quality_acoustic.yaml`，正式训练仍应使用自己的数据配置。
+`tests/dslight_quality_compare.py` 和 `tests/dslight_final_mel_compare.py` 的 `--legacy-config` 允许基线和候选分别指定编码器维度；本机实验配置为忽略目录 `data/dslight_eval100/compact_quality_acoustic.yaml`，正式训练仍应使用自己的数据配置。参考配置已设 `aux_decoder_grad=1.0`；它继承原 all-in-one 的 Muon 优化器，而本次声学子配置实验使用 AdamW，因此不能将此实验等同于参考配置的完整训练验证。
 
 #### 50 MB 参考档训练显存：合成批次实测
 

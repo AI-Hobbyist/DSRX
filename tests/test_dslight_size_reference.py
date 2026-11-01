@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 
 from modules.toplevel import DiffSingerAllInOne
-from utils.hparams import set_hparams
+from utils.hparams import hparams, set_hparams
 from utils.phoneme_utils import load_phoneme_dictionary
 
 
@@ -19,6 +19,7 @@ class AllInOneSizeReferenceTest(unittest.TestCase):
 
     def test_quality_full_model_forward_and_backward(self):
         self.check_configuration('configs/dslight/all_in_one_quality_50mb.yaml')
+        self.assertEqual(hparams['shallow_diffusion_args']['aux_decoder_grad'], 1.0)
 
     def check_configuration(self, config):
         torch.set_num_threads(1)
