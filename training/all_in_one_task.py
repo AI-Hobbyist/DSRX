@@ -1,4 +1,5 @@
 import pathlib
+import warnings
 
 import matplotlib.pyplot as plt
 import torch
@@ -239,6 +240,13 @@ class AllInOneTask(AcousticTask):
             durations, pitch, variances = self.variance_validation_infer.forward_model(
                 variance_batch
             )
+            if not torch.any(durations > 0):
+                warnings.warn(
+                    f'Skipping variance validation audio for {speaker_name}: '
+                    'predicted durations contain zero frames.',
+                    UserWarning,
+                )
+                continue
             param['ph_dur'] = ' '.join(
                 str(round(value * timestep, 6)) for value in durations[0].cpu().tolist()
             )
