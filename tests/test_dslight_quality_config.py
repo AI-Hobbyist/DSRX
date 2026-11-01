@@ -1,11 +1,26 @@
 import unittest
 
+import torch
+
+from basics.base_task import BaseTask
 from modules.aux_decoder import build_aux_decoder
 from modules.backbones import build_backbone
 from utils.hparams import set_hparams
 
 
 class DSLightQualityConfigTest(unittest.TestCase):
+    def test_all_in_one_quality_builds_scheduler(self):
+        set_hparams(
+            config='configs/templates/all_in_one_dslight_quality_50mb.yaml',
+            print_hparams=False,
+        )
+        parameter = torch.nn.Parameter(torch.ones(1))
+        optimizer = torch.optim.AdamW([parameter], lr=0.0006)
+        scheduler = BaseTask.build_scheduler(None, optimizer)
+        self.assertIsInstance(scheduler, torch.optim.lr_scheduler.StepLR)
+        self.assertEqual(scheduler.step_size, 5000)
+        self.assertEqual(scheduler.gamma, 0.8)
+
     def test_quality_configuration_builds_expected_architectures(self):
         config = set_hparams(config='configs/templates/config_acoustic_dslight_quality.yaml', print_hparams=False)
         shallow = config['shallow_diffusion_args']
