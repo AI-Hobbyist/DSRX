@@ -133,6 +133,17 @@ class DiffSingerAcousticExporter(BaseExporter):
                     ckpt_steps=self.ckpt_steps, device=self.device
                 )
             else:
+                shallow_args = hparams.get('shallow_diffusion_args', {})
+                uses_dslight = (
+                    model.backbone_type == 'dslight'
+                    or (model.use_shallow_diffusion and shallow_args.get('aux_decoder_arch') == 'dslight')
+                )
+                if uses_dslight:
+                    load_ckpt(
+                        model, lora_cfg.get('base_ckpt') or hparams['work_dir'],
+                        ckpt_steps=None if lora_cfg.get('base_ckpt') else self.ckpt_steps,
+                        prefix_in_ckpt='model', strict=True, device=self.device,
+                    )
                 rank = int(lora_cfg.get('rank', 8))
                 alpha = int(lora_cfg.get('alpha', 16))
                 targets = lora_cfg.get('target_modules', ['linear'])

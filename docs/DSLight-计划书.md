@@ -401,6 +401,8 @@ P4 调参记录：107 条训练 / 20 条验证、FP32 AdamW、600 步下，DSLig
 
 P4 后级独立学习率实验：同一 107 条训练 / 20 条验证、600 步、FP32 AdamW，原组合统一学习率 1e-4；DSLight 组合将后级设为 6e-4、其他模块 1e-4、`aux_decoder_grad=1.0`。原组合前级 L1 / 后级主 L2 为 1.40710 / 0.38589，DSLight 为 1.75128 / 1.09855，均未达到以原组合为基线的 5% 目标。`tests/dslight_benchmark.py --backbone-learning-rate` 可复核该参数分组；两组优化器参数不同，结论限本短训实验。
 
+P4 LoRA 导出基座保护（部分）：对包含 DSLight 前级或后级的声学导出，在注入 LoRA 之前严格加载完整基座，拒绝旧架构及同架构尺寸不匹配；匹配 DSLight 基座可加载。`test_dslight_checkpoint_export.py` 共 11 项通过。此项只覆盖声学导出器的基座，后续 adapter、原生推理及 variance 等入口仍待单独审计，不能宣称所有 LoRA 路径已隔离。
+
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 
 | 模块 | 旧配置：参数 / FP32 权重 | DSLight 候选：参数 / FP32 权重 |

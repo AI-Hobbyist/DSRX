@@ -106,6 +106,49 @@ class DSLightCheckpointExportTest(unittest.TestCase):
         torch.save(checkpoint, path)
         self.assertEqual(self.export_model().backbone_type, 'lynxnet2')
 
+    def test_lora_loads_matching_dslight_base(self):
+        self.write_checkpoint()
+        hparams['lora'] = {
+            'enabled': True,
+            'base_ckpt': str(self.root / 'model_ckpt_steps_1.ckpt'),
+            'target_modules': ['linear'],
+            'rank': 2,
+            'alpha': 2,
+            'merge_before_export': True,
+        }
+        self.assertEqual(self.export_model().backbone_type, 'dslight')
+
+    def test_lora_rejects_wrong_dslight_dimensions(self):
+        self.write_checkpoint()
+        hparams['backbone_args']['num_channels'] = 128
+        hparams['lora'] = {
+            'enabled': True,
+            'base_ckpt': str(self.root / 'model_ckpt_steps_1.ckpt'),
+            'target_modules': ['linear'],
+            'rank': 2,
+            'alpha': 2,
+            'merge_before_export': True,
+        }
+        with self.assertRaises(RuntimeError):
+            self.export_model()
+
+    def test_lora_rejects_wrong_architecture_base(self):
+        hparams['backbone_type'] = self.legacy_config['backbone_type']
+        hparams['backbone_args'] = self.legacy_config['backbone_args']
+        self.write_checkpoint()
+        hparams.clear()
+        hparams.update(copy.deepcopy(self.light_config))
+        hparams['lora'] = {
+            'enabled': True,
+            'base_ckpt': str(self.root / 'model_ckpt_steps_1.ckpt'),
+            'target_modules': ['linear'],
+            'rank': 2,
+            'alpha': 2,
+            'merge_before_export': True,
+        }
+        with self.assertRaises(RuntimeError):
+            self.export_model()
+
     def test_legacy_aux_decoder_is_rejected_for_dslight(self):
         hparams['shallow_diffusion_args']['aux_decoder_arch'] = 'convnext'
         hparams['shallow_diffusion_args']['aux_decoder_args'] = (
