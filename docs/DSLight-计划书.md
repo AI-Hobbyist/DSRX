@@ -405,6 +405,23 @@ P4 LoRA 导出基座保护（部分）：对包含 DSLight 前级或后级的声
 
 P4 声学 LoRA 加载补充：用户授权修改计划外的原生声学推理入口及必要共享校验工具。对显式选用 DSLight 的声学模型，原生推理与导出在注入 LoRA 前严格加载基座；后续完整权重或纯 adapter 在加载前检查键和尺寸，包含原生推理优先 `.infer.ckpt` 的情况。`test_dslight_checkpoint_export.py` 和 `test_dslight_checkpoint_inference.py` 共 22 项通过，覆盖匹配基座、架构 / 尺寸错配、错误后续完整权重、合法纯 adapter 和旧配置加载。该记录不覆盖 variance 或旧架构 LoRA 反向加载 DSLight 权重，仍需审计。
 
+### P4 质量优先档与原组合的主对照（2026-11-01）
+
+按用户要求，本次基线对照只使用计划质量优先档：后级 C=256/N=15，前级 C=192/N=6。107 条 OpenCpop 训练、20 条未参与训练的验证录音，RTX 5060 Laptop，FP32 AdamW、学习率 6e-4、weight decay 0.01、每组 6,000 步、batch 1，固定数据顺序；原组合 `aux_decoder_grad=0.1`，调优后的 DSLight 为 1.0。前级 L1 和最终 mel L1 按 mel 元素加权；主 L2 按帧加权并固定每条录音的随机种子。
+
+| 指标 | 原组合 | DSLight 质量优先 | 相对原组合 |
+| --- | ---: | ---: | ---: |
+| 前级 mel L1 | 1.05899 | 0.94395 | -10.86% |
+| 后级主损失 L2 | 1.06389 | 0.28855 | -72.88% |
+| 20 步采样最终 mel L1 | 3.09603 | 1.19850 | -61.29% |
+| CPU 单线程声学 RTF（467 帧，20 步） | 2.1683 | 0.3278 | -84.88% |
+
+该次验证集上前级和后级指标均优于原组合，满足用户要求的相对原组合 ≤5% 劣化标准；这不是跨数据集、跨设备或主观听感结论。人工抽听依用户要求跳过。此前短训及其他档位结果保留为历史诊断，不作为本次主对照。可复制的数据模板为 `configs/dslight/template.yaml`，质量档模型配置为 `configs/dslight/acoustic_quality.yaml`；其中学习率与 weight decay 对应本次实验，学习率在 6,000 步内保持不变。模型与最终 mel 对照脚本分别为 `tests/dslight_quality_compare.py` 和 `tests/dslight_final_mel_compare.py`。
+
+按 §6.6 单独运行 60 步、丢弃前 10 步，在同设备、FP32、batch=1、num_workers=0、accumulate_grad_batches=1、209–688 帧条件下，中位结果为：原组合 10.97 it/s、5,554 frames/s、峰值 allocated 1,176.6 MiB；质量档 9.41 it/s、4,340 frames/s、峰值 allocated 274.1 MiB。质量档此小批量测量未加速；此前 6,000 步全程对应 13.59 / 13.26 it/s，说明测量有波动。该设备和帧数不同于 §6 的 4090 / 16k–50k 估算，不能用作其校准或跨设备外推，目标设备大批量的预测仍待实测。
+
+质量档 6,000 步权重经 `DiffSingerAcousticExporter` 生成完整 opset 15 声学 ONNX，ONNX Runtime 1.23 的 CPUExecutionProvider 在 16 / 64 帧运行得到有限 `[1,T,128]` 输出。第一次导出因实验目录缺少词典而在附件阶段失败；复制本次数据的词典和映射后完整导出成功。当前 `diffs` 使用 PyTorch 2.11；强制要求 PyTorch 1.13 的 `scripts/export.py` CLI 仍未验证。`python -m unittest discover -s tests -p 'test_dslight*.py'` 共 34 项通过。实验数据与短训权重位于本机忽略目录 `data/dslight_eval100/`，不是仓库交付或正式收敛模型。
+
 P4 参数账本（构造实测）：以 `configs/templates/all_in_one_lynxnet2_muon.yaml` 为基础，词表 65，所有 duration/pitch/energy/breathiness/voicing/tension 开关开启，H=256，mel=128。DSLight 候选的声学后级设为 C=192/N=12，pitch 和 variance 后级各设为 C=128/N=8，声学前级设为 C=256/N=8；variance 仅做构造和后级张量形状 smoke，未完成 variance 训练与质量验证，不作为已验证模型。`tests/dslight_parameter_report.py` 可复核。
 
 | 模块 | 旧配置：参数 / FP32 权重 | DSLight 候选：参数 / FP32 权重 |

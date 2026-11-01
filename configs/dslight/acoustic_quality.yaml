@@ -1,0 +1,32 @@
+# Quality-oriented acoustic experiment; fill dataset paths in your own config.
+# The 6,000-step comparison used AdamW and aux_decoder_grad=1.0.
+base_config:
+  - configs/dslight/acoustic.yaml
+
+backbone_args:
+  num_channels: 256
+  num_layers: 15
+  kernel_size: 7
+  dilation_cycle: [1, 3, 9, 27, 81]
+  cond_channels: 256
+  time_embed_dim: 64
+  dropout_rate: 0.0
+
+shallow_diffusion_args:
+  aux_decoder_args:
+    num_channels: 192
+    num_layers: 6
+    kernel_size: 7
+    dilation_cycle: [1, 3, 9]
+    dropout_rate: 0.0
+  aux_decoder_grad: 1.0
+
+optimizer_args:
+  optimizer_cls: torch.optim.AdamW
+  lr: 0.0006
+  weight_decay: 0.01
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.StepLR
+  # Keep the learning rate constant during the 6,000-step comparison.
+  step_size: 1000000000
+  gamma: 0.8
