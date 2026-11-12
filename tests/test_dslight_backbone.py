@@ -6,6 +6,29 @@ from modules.backbones import build_backbone, run_backbone
 
 
 class DSLightBackboneTest(unittest.TestCase):
+    def test_eval_fusion_matches_training_expression(self):
+        model = build_backbone(5, 1, 'dslight', {
+            'num_channels': 8, 'num_layers': 2, 'cond_channels': 6,
+            'time_embed_dim': 8, 'dropout_rate': 0.,
+        })
+        spec = torch.randn(2, 1, 5, 11)
+        step = torch.tensor([1., 10.])
+        cond = torch.randn(2, 6, 11)
+        with torch.no_grad():
+            expected = model.train()(spec, step, cond)
+            actual = model.eval()(spec, step, cond)
+        torch.testing.assert_close(actual, expected)
+
+    def test_frequency_buffer_survives_precision_roundtrip(self):
+        model = build_backbone(5, 1, 'dslight', {
+            'num_channels': 8, 'num_layers': 2, 'cond_channels': 6,
+            'time_embed_dim': 8,
+        })
+        expected = model.time_frequencies.clone()
+        model.half().float()
+        torch.testing.assert_close(model.time_frequencies, expected, rtol=0, atol=0)
+        self.assertNotIn('time_frequencies', model.state_dict())
+
     def test_reflow_prepares_once_per_sampling_invocation(self):
         from modules.core.reflow import RectifiedFlow
         from utils.hparams import hparams

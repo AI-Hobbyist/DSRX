@@ -20,7 +20,10 @@ class DSLightBlock(nn.Module):
         a, b = self.expand(self.depthwise(x)).chunk(2, dim=1)
         h = self.project(torch.cat((a * torch.sigmoid(b), a), dim=1))
         projected_condition = condition if condition_prepared else self.condition(condition)
-        h = h * (1 + time) + time + projected_condition
+        if self.training:
+            h = h * (1 + time) + time + projected_condition
+        else:
+            h = torch.addcmul(time, h, 1 + time) + projected_condition
         return x + self.dropout(h)
 
 
@@ -40,6 +43,13 @@ class DSLightBackbone(nn.Module):
         self.in_dims = in_dims
         self.n_feats = n_feats
         self.time_embed_dim = time_embed_dim
+        half_dim = time_embed_dim // 2
+        self.register_buffer(
+            'time_frequencies',
+            torch.exp(torch.arange(half_dim, dtype=torch.float32)
+                      * (-math.log(10000.0) / (half_dim - 1))),
+            persistent=False,
+        )
         self.input_projection = nn.Conv1d(in_dims * n_feats, num_channels, 1)
         self.condition_projection = nn.Conv1d(cond_channels, num_channels, 1)
         self.time_projection = nn.Linear(time_embed_dim, num_channels)
@@ -54,6 +64,16 @@ class DSLightBackbone(nn.Module):
         )
         self.output_projection = nn.Conv1d(num_channels, in_dims * n_feats, 1)
 
+    def _apply(self, fn):
+        result = super()._apply(fn)
+        half_dim = self.time_embed_dim // 2
+        self.time_frequencies = torch.exp(
+            torch.arange(half_dim, device=self.time_projection.weight.device,
+                         dtype=torch.float32)
+            * (-math.log(10000.0) / (half_dim - 1))
+        )
+        return result
+
     @torch.no_grad()
     def prepare_condition(self, cond):
         """Return per-layer projections owned by one sampling invocation."""
@@ -64,10 +84,14 @@ class DSLightBackbone(nn.Module):
 
     def forward(self, spec, diffusion_step, cond):
         half_dim = self.time_embed_dim // 2
-        frequencies = torch.exp(
-            torch.arange(half_dim, device=diffusion_step.device, dtype=spec.dtype)
-            * (-math.log(10000.0) / (half_dim - 1))
-        )
+        if spec.dtype == torch.float32 and self.time_frequencies.dtype == torch.float32:
+            frequencies = self.time_frequencies
+        else:
+            # Preserve the original low-precision arange/exp rounding.
+            frequencies = torch.exp(
+                torch.arange(half_dim, device=diffusion_step.device, dtype=spec.dtype)
+                * (-math.log(10000.0) / (half_dim - 1))
+            )
         phase = diffusion_step.reshape(-1, 1) * frequencies.unsqueeze(0)
         time = self.time_projection(torch.cat((phase.sin(), phase.cos()), dim=1)).unsqueeze(-1)
         condition_prepared = cond.dim() == 4
