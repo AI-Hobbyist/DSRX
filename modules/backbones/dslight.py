@@ -5,14 +5,15 @@ from torch import nn
 
 
 class DSLightBlock(nn.Module):
-    def __init__(self, channels, kernel_size, dilation, dropout_rate):
+    def __init__(self, channels, kernel_size, dilation, dropout_rate, expansion_channels=None):
         super().__init__()
         self.depthwise = nn.Conv1d(
             channels, channels, kernel_size, padding=dilation * (kernel_size - 1) // 2,
             dilation=dilation, groups=channels,
         )
-        self.expand = nn.Conv1d(channels, 2 * channels, 1)
-        self.project = nn.Conv1d(2 * channels, channels, 1)
+        expansion_channels = channels if expansion_channels is None else expansion_channels
+        self.expand = nn.Conv1d(channels, 2 * expansion_channels, 1)
+        self.project = nn.Conv1d(2 * expansion_channels, channels, 1)
         self.condition = nn.Conv1d(channels, channels, 1)
         self.dropout = nn.Dropout(dropout_rate)
 
@@ -32,7 +33,8 @@ class DSLightBackbone(nn.Module):
 
     def __init__(self, in_dims, n_feats, *, num_channels=192, num_layers=12,
                  kernel_size=7, dilation_cycle=(1, 3, 9, 27, 81),
-                 cond_channels=256, time_embed_dim=64, dropout_rate=0.0):
+                 cond_channels=256, time_embed_dim=64, dropout_rate=0.0,
+                 expansion_channels=None):
         super().__init__()
         if kernel_size < 1 or kernel_size % 2 == 0:
             raise ValueError('kernel_size must be a positive odd integer')
@@ -40,6 +42,8 @@ class DSLightBackbone(nn.Module):
             raise ValueError('dilation_cycle must contain positive integers')
         if time_embed_dim < 4 or time_embed_dim % 2:
             raise ValueError('time_embed_dim must be an even integer of at least 4')
+        if expansion_channels is not None and expansion_channels < 1:
+            raise ValueError('expansion_channels must be positive')
         self.in_dims = in_dims
         self.n_feats = n_feats
         self.time_embed_dim = time_embed_dim
@@ -59,7 +63,8 @@ class DSLightBackbone(nn.Module):
             nn.Conv1d(num_channels, num_channels, 1),
         )
         self.blocks = nn.ModuleList(
-            DSLightBlock(num_channels, kernel_size, dilation_cycle[i % len(dilation_cycle)], dropout_rate)
+            DSLightBlock(num_channels, kernel_size, dilation_cycle[i % len(dilation_cycle)],
+                         dropout_rate, expansion_channels)
             for i in range(num_layers)
         )
         self.output_projection = nn.Conv1d(num_channels, in_dims * n_feats, 1)

@@ -10,6 +10,8 @@
 4. scripts/evaluate_dslight_sampling.py 已使用真实权重、原始留出音频及配套字典严格加载完成评估。唯一配置留出样本2033001224：起点0.4的4/8/20步MAE为0.52248/0.54938/0.57293；辅助输出MAE0.45543；对应实际NFE4/8/20，辅助路径NFE0。结果artifacts/dslight_sampling/sampling.json包含SHA256、设备、逐项耗时与范围说明，sample_0.pt保留真实评估特征供量化复用。该样本更多步数未改善重建误差，不改默认步数，不能外推听音优劣。MANUAL/PENDING：听音；重建指标不等同完整SVS质量。进入提交/推送检查点。
 5. 选择性INT8权重存储、独立包格式及严格回载已实现，保留时间/depthwise/输出浮点。两项量化测试、原opset15动态帧ONNX测试通过；真实留出特征CPU比较和五个声码器对照音频完成。声学包26,335,459→22,535,435字节（-14.4%），缓存FP32约0.39990秒、量化约0.42928秒，量化目标MAE0.59342 vs FP32 0.58856，因此保持量化可选、不默认启用。完整范围与待验证事项见DSLight-optimization-results.md。进入提交/推送检查点。
 
+容量质量补验：三次有界真实训练已完成。整体128通道的留出MAE仍明显劣于原教师；新增可选expansion_channels仅缩门控内部宽度，160残差/128门控的2000步对照MAE0.62514（教师0.57293）。因此保留原160默认，提供独立候选配置与严格回载。两项裁剪映射、七项骨干、原opset15动态ONNX测试通过。详见结果文档，不再把容量结论局限于随机权重速度。
+
 当前实际仓库为 DSRX/，分支 ds_light_backend，上游 origin/ds_light_backend。外层工作区另有一个尚无提交的仓库，不能将所有外层未跟踪资料一并提交。
 
 用户已提供 ckpt/dslight/model_ckpt_steps_100000.ckpt 及配置和配套声码器。配置为 160 通道、10 层、224 维条件的 Reflow，默认 20 步。已确认 data/opencpop 有 wavs/ 和包含音素/时长/音符的 transcriptions.csv；配置引用的 data/pre/binary/all_in_one_dslight 尚不存在，需沿现有数据链准备评估特征，不重新标注。真实歌声/听音未执行时记录 MANUAL/PENDING，继续可自主完成的实现与自动验证，不将其记为 PASS 或因此标记 blocked。

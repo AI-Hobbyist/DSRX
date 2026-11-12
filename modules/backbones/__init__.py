@@ -26,6 +26,7 @@ def build_backbone(
         allowed_args = {
             'num_layers', 'num_channels', 'kernel_size', 'dilation_cycle',
             'cond_channels', 'time_embed_dim', 'dropout_rate',
+            'expansion_channels',
         }
         unknown_args = set(backbone_args) - allowed_args
         if unknown_args:

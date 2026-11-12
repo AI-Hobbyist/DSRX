@@ -57,4 +57,21 @@ INT8包使用 `modules.backbones.dslight_quantization.load_weight_only_package`�
 - 报告：artifacts/dslight_width/report.json、artifacts/dslight_sampling/sampling.json、artifacts/dslight_quantization/quantization.json。
 - 音频：artifacts/dslight_quantization/sample_0_{fp32,fp32_4steps,int8_weight_only,auxiliary,reference_mel}.wav。
 
-MANUAL/PENDING：人工听音。未完成：较窄网络的真实训练与质量等价验证、广泛录音覆盖、旧PyTorch1.13环境验证。当前不以随机网络速度代替真实质量，也不把本次实验称为完成了一个等音质128通道替代模型。
+MANUAL/PENDING：人工听音。未验证：广泛录音覆盖、旧PyTorch1.13环境。当前不以随机网络速度代替真实质量，也不把本次实验称为完成了一个等音质128通道替代模型。
+
+## 通道候选的真实训练对照
+
+新增 `scripts/train_dslight_width.py`，使用教师权重的重要性排序进行显式通道映射，正确同步门控两半；然后在排除留出样本的真实录音上做有界适配。输出独立 acoustic checkpoint 和配套配置，严格回载通过。原 all-in-one 模型及其 variance 分支不改写。
+
+| 候选 | 训练数据/更新 | 留出目标mel MAE |
+| --- | --- | ---: |
+| 原160通道教师 | 原有权重 | 0.57293 |
+| 整体128通道、插值状态适配 | 8条非留出录音/400步 | 1.49433 |
+| 整体128通道、教师采样轨迹适配 | 32条非留出录音/2000步 | 1.20640 |
+| 残差160、门控展开128、教师轨迹适配 | 同32条/2000步 | 0.62514 |
+
+第二种训练状态来源修正改善了结果，但没有证明缩小整个残差网络可保持质量。门控局部缩宽更接近教师，因此增加可选 `backbone_args.expansion_channels`：省略时完全保留原架构及参数预算，指定128时只改变block的expand/project内部维度。候选仍有约9.1%的此样本重建误差增加，不默认替换原160模型。
+
+生成产物分别位于 `artifacts/dslight_width_trained`、`artifacts/dslight_width_rollout`、`artifacts/dslight_gate_width`；各目录有 `adaptation.json`、独立配置和权重。三者均记录教师SHA256、实际训练条目、更新数与独立留出对照。没有将教师轨迹蒸馏解释成来自SVF，也没有使用参考声库输出。
+
+新增两项通道映射测试通过，覆盖门控两半的索引、残差维度、原教师不被修改及动态长度；原七项骨干测试和opset15动态帧测试再运行通过。结论是提供经过真实训练验证的容量选项与已知质量代价，而非承诺容量压缩无损。
