@@ -251,6 +251,13 @@ class GaussianDiffusion(nn.Module):
             assert x_start is not None, 'Missing shallow diffusion source.'
             x = x_start
 
+        if (
+            t_max > 0
+            and not self.denoise_fn.training
+            and hasattr(self.denoise_fn, 'prepare_condition')
+        ):
+            cond = self.denoise_fn.prepare_condition(cond)
+
         if speedup > 1 and t_max > 0:
             algorithm = hparams['diff_accelerator']
             if algorithm == 'dpm-solver':

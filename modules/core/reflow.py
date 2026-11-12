@@ -160,6 +160,12 @@ class RectifiedFlow(nn.Module):
         infer_step = hparams['sampling_steps']
 
         if t_start < 1:
+            # Keep prepared projections local to this utterance, never on the model.
+            if (
+                not self.velocity_fn.training
+                and hasattr(self.velocity_fn, 'prepare_condition')
+            ):
+                cond = self.velocity_fn.prepare_condition(cond)
             dt = (1.0 - t_start) / max(1, infer_step)
             algorithm_fn = {
                 'euler': self.sample_euler,

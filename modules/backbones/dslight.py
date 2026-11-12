@@ -16,10 +16,11 @@ class DSLightBlock(nn.Module):
         self.condition = nn.Conv1d(channels, channels, 1)
         self.dropout = nn.Dropout(dropout_rate)
 
-    def forward(self, x, condition, time):
+    def forward(self, x, condition, time, condition_prepared=False):
         a, b = self.expand(self.depthwise(x)).chunk(2, dim=1)
         h = self.project(torch.cat((a * torch.sigmoid(b), a), dim=1))
-        h = h * (1 + time) + time + self.condition(condition)
+        projected_condition = condition if condition_prepared else self.condition(condition)
+        h = h * (1 + time) + time + projected_condition
         return x + self.dropout(h)
 
 
@@ -53,6 +54,14 @@ class DSLightBackbone(nn.Module):
         )
         self.output_projection = nn.Conv1d(num_channels, in_dims * n_feats, 1)
 
+    @torch.no_grad()
+    def prepare_condition(self, cond):
+        """Return per-layer projections owned by one sampling invocation."""
+        condition = self.condition_projection(cond)
+        if len(self.blocks) == 0:
+            return cond
+        return torch.stack([block.condition(condition) for block in self.blocks])
+
     def forward(self, spec, diffusion_step, cond):
         half_dim = self.time_embed_dim // 2
         frequencies = torch.exp(
@@ -61,9 +70,11 @@ class DSLightBackbone(nn.Module):
         )
         phase = diffusion_step.reshape(-1, 1) * frequencies.unsqueeze(0)
         time = self.time_projection(torch.cat((phase.sin(), phase.cos()), dim=1)).unsqueeze(-1)
-        condition = self.condition_projection(cond)
+        condition_prepared = cond.dim() == 4
+        condition = cond if condition_prepared else self.condition_projection(cond)
         x = self.stem(self.input_projection(spec.flatten(1, 2)))
-        for block in self.blocks:
-            x = block(x, condition, time)
+        for index, block in enumerate(self.blocks):
+            layer_condition = condition[index] if condition_prepared else condition
+            x = block(x, layer_condition, time, condition_prepared)
         x = self.output_projection(x)
         return x.reshape(spec.shape[0], self.n_feats, self.in_dims, spec.shape[-1])
