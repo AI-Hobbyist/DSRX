@@ -16,10 +16,14 @@ class DSLightBlock(nn.Module):
         self.project = nn.Conv1d(2 * expansion_channels, channels, 1)
         self.condition = nn.Conv1d(channels, channels, 1)
         self.dropout = nn.Dropout(dropout_rate)
+        self.fused_projection = None
 
     def forward(self, x, condition, time, condition_prepared=False):
         a, b = self.expand(self.depthwise(x)).chunk(2, dim=1)
-        h = self.project(torch.cat((a * torch.sigmoid(b), a), dim=1))
+        if self.training or torch.jit.is_tracing() or self.fused_projection is None:
+            h = self.project(torch.cat((a * torch.sigmoid(b), a), dim=1))
+        else:
+            h = self.fused_projection(a, b, self.project.weight, self.project.bias)
         projected_condition = condition if condition_prepared else self.condition(condition)
         if self.training:
             h = h * (1 + time) + time + projected_condition

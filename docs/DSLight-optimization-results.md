@@ -75,3 +75,15 @@ MANUAL/PENDING：人工听音。未验证：广泛录音覆盖、旧PyTorch1.13�
 生成产物分别位于 `artifacts/dslight_width_trained`、`artifacts/dslight_width_rollout`、`artifacts/dslight_gate_width`；各目录有 `adaptation.json`、独立配置和权重。三者均记录教师SHA256、实际训练条目、更新数与独立留出对照。没有将教师轨迹蒸馏解释成来自SVF，也没有使用参考声库输出。
 
 新增两项通道映射测试通过，覆盖门控两半的索引、残差维度、原教师不被修改及动态长度；原七项骨干测试和opset15动态帧测试再运行通过。结论是提供经过真实训练验证的容量选项与已知质量代价，而非承诺容量压缩无损。
+
+## 显式门控/投影图编译
+
+`modules/backbones/dslight_fusion.py` 提供 `enable_dslight_fusion(model.eval())`，把门控和pointwise投影表达式交给现代PyTorch的Inductor编译；不是宣称所有计算成为单个硬件kernel。训练和trace导出仍执行原卷积表达式。参数/state_dict不改变；该路径要求浮点投影，不与INT8存储模块混用。没有自动安装编译器或静默fallback。
+
+`scripts/profile_dslight_fusion.py` 用实际checkpoint和缓存留出特征验证。已通过完整与半长度乐句的数值对照（atol/rtol 1e-4）、启用后trace回退，以及门控投影表达式的前向/梯度检查。
+
+当前CPU复测：eager中位 **0.39456秒**，编译门控 **0.47624秒**，编译/预热 **14.09秒**。首轮曾出现相反的速度顺序，说明短基准有波动；不选取有利的一次报告为稳定收益。此路径仅显式可选，默认继续eager缓存，不宣称GPU编译已验收。
+
+本机已安装MSVC；前台复跑时需先调用其vcvars64.bat，并设置进程环境 `PYTHONUTF8=1`、`VSLANG=1033`、`TORCHINDUCTOR_COMPILE_THREADS=1`。首次失败为MSVC帮助输出被GBK误解码，进程级设置后已成功，不改动全局配置或PyTorch源码。结果保存在artifacts/dslight_fusion/report.json。
+
+五项优化的实现、实验和取舍均已形成可复跑结果。默认保留有证据且保持现有权重的路径；缩宽和量化的质量代价、编译后端成本均明示，不以“全部启用”代替优化判断。人工听音继续记MANUAL/PENDING。
