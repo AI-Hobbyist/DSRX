@@ -1,6 +1,6 @@
 # All-in-one 内置 Mini-DDSP 联合训练计划
 
-日期：2026-11-12。状态：计划完成，尚未实施。
+日期：2026-11-12。实施更新：2026-11-13，M1 自动验收通过；M2～M6 尚未开始。
 
 ## 1. 最终需求与范围
 
@@ -189,7 +189,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 8. 实施阶段与验收
 
-阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前以下阶段均 **NOT STARTED**。
+阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1 **PASS**；M2～M6 **NOT STARTED**。
 
 | 阶段 | 实施范围 | 必需验收 |
 |---|---|---|
@@ -208,4 +208,10 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 9. 当前交付状态
 
-可行性分析和计划编写完成；未实现、未运行新训练/预处理/导出，不能把计划中的验收写为 PASS。本次只提交推送本计划文档并更新根目录交接手册。后续实施从 M1 开始，以本计划及用户后续修订为准。
+M1 **PASS**（2026-11-13）：五份 all-in-one 模板默认关闭；内部 MiniDDSP 持有控制器、分组合成、Hann/window/索引和版本化噪声基底。配置加载拒绝非 all-in-one 误开，关闭时不构造模块、不增加 checkpoint 参数。噪声由固定 seed=1729 的互斥 FFT 频带生成，持久保存，不读取参考目录或外部噪声文件。Mini-DDSP MIT 许可保存在 docs/licenses/mini-ddsp.txt。
+
+自动验收：`tests.test_mini_ddsp` 四项与 `tests.test_all_in_one_infer_cli` 两项共六项通过。覆盖 24k/44.1k/48k、B=2、T=1/4/5、无声/零有效长度、mel 与全部控制器参数有限梯度、严格资源回载逐值一致、分组/直接波形和梯度、独立逐帧重叠相加对照、原 CLI 回归。采样率测试是模块冒烟，不代表真实训练音质。FP32 分组对照锁定 rtol=2e-5、波形 atol=2e-6、梯度 atol=2e-5；后续 ORT/eager 波形对照锁定 rtol=2e-4、atol=2e-5，不能为通过而放宽。
+
+新 Python 文件已用系统 Python 的 Black 26.10.0 格式化；diffs 环境没有 Black，未安装新依赖。测试前台 PowerShell Tee 日志、退出码 0。首次沙箱进程在导入阶段停滞，核实进程后 Ctrl-C 结束，正常 Windows 权限重跑通过，不记录该次为 PASS。
+
+M2～M6 尚未实施；真实预处理、联合训练、正式内置推理、波形 ONNX、真实音质/性能评估尚未验证。人工听音 MANUAL/PENDING。下一阶段为 M2，须在 M1 提交推送成功后开始。

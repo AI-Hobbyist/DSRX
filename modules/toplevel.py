@@ -20,7 +20,7 @@ from modules.fastspeech.acoustic_encoder import FastSpeech2Acoustic
 from modules.fastspeech.param_adaptor import ParameterAdaptorModule
 from modules.fastspeech.tts_modules import RhythmRegulator, LengthRegulator
 from modules.fastspeech.variance_encoder import FastSpeech2Variance, MelodyEncoder
-from utils.hparams import hparams
+from utils.hparams import hparams, mini_ddsp_config
 
 
 class ShallowDiffusionOutput:
@@ -38,6 +38,10 @@ class DiffSingerAllInOne(CategorizedModule):
         super().__init__()
         self.acoustic = DiffSingerAcoustic(vocab_size=vocab_size, out_dims=out_dims)
         self.variance = DiffSingerVariance(vocab_size=vocab_size)
+        if mini_ddsp_config(hparams).get('enabled', False):
+            from modules.vocoders.mini_ddsp import MiniDDSP
+
+            self.vocoder = MiniDDSP(hparams)
 
 
 class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):

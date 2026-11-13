@@ -17,6 +17,13 @@ REPLACE_CONFIG_MAPPINGS = {
 }
 
 
+def mini_ddsp_config(config):
+    settings = config.get('all_in_one', {}).get('mini_ddsp', {})
+    if settings.get('enabled', False) and not config.get('all_in_one', {}).get('enabled', False):
+        raise ValueError('Mini-DDSP requires all_in_one.enabled=true')
+    return settings
+
+
 class Args:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -116,6 +123,8 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
                 hparams_[k] = eval(v)
             else:
                 hparams_[k] = type(hparams_[k])(v)
+
+    mini_ddsp_config(hparams_)
 
     @rank_zero_only
     def dump_hparams():
