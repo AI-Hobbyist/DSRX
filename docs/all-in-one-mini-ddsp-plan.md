@@ -1,6 +1,6 @@
 # All-in-one 内置 Mini-DDSP 联合训练计划
 
-日期：2026-11-12。实施更新：2026-11-13，M1 自动验收通过；M2～M6 尚未开始。
+日期：2026-11-12。实施更新：2026-11-13，M1、M2 自动验收通过；M3～M6 尚未开始。
 
 ## 1. 最终需求与范围
 
@@ -189,7 +189,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 8. 实施阶段与验收
 
-阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1 **PASS**；M2～M6 **NOT STARTED**。
+阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1、M2 **PASS**；M3～M6 **NOT STARTED**。
 
 | 阶段 | 实施范围 | 必需验收 |
 |---|---|---|
@@ -214,4 +214,12 @@ M1 **PASS**（2026-11-13）：五份 all-in-one 模板默认关闭；内部 Mini
 
 新 Python 文件已用系统 Python 的 Black 26.10.0 格式化；diffs 环境没有 Black，未安装新依赖。测试前台 PowerShell Tee 日志、退出码 0。首次沙箱进程在导入阶段停滞，核实进程后 Ctrl-C 结束，正常 Windows 权限重跑通过，不记录该次为 PASS。
 
-M2～M6 尚未实施；真实预处理、联合训练、正式内置推理、波形 ONNX、真实音质/性能评估尚未验证。人工听音 MANUAL/PENDING。下一阶段为 M2，须在 M1 提交推送成功后开始。
+M1 已提交推送：117f05a104f629b36bb70c768e8728babb837017，远端确认一致。
+
+M2 **PASS**（2026-11-13）：新增独立 VocoderBinarizer，顺序 acoustic→variance→vocoder，三者使用原 indexed writer 和 metadata。acoustic 与 vocoder 按稳定 sample_id/augmentation_id 配对；使用已有随机增强清单，波形由 librosa 变调/变速后重新提取 mel/F0/UV、唱法和完整 VR 谐波幅度。关闭时保留既有频谱增强。ID 采用定长字节标量，符合现有读取器，不改公共二进制格式、不升级旧包、不导入外部 npy。
+
+VR 完整 harmonic 缓存位于本轮临时目录，身份包含波形、模型路径/文件身份/配置、输入和工作采样率及 mono 约定，顺序处理器复用。没有唱法分离时 vocoder 自动生成；WORLD 不作为 VR 结果复用。共享 hnsep_sample_rate 和权重 sr 元数据校验，非工作采样率先转换、分离后转回并精确对齐。运行结束清理中间缓存，源 wav 不动。
+
+真实自动验收：scripts/validate_mini_ddsp_data.py --singing on/off 分别使用2001000001、2001000002训练及2033001224留出，seed42。每次 acoustic/vocoder train=10/10、valid=1/1，variance train=2、valid=1，唯一配对11、VR调用11（无重复分离）。覆盖单独变调、单独变速及组合，配对 mel/F0 逐值一致，幅度有限且形状正确，源 wav/标注 SHA256 不变，train/valid ID 无交叉。两条路径完整报告分别在 artifacts/mini_ddsp_m2/singing_on/report.json 和 singing_off/report.json（不提交数据）。增强音频与旧频谱增强的数值分布不同，仅本开关路径采用真实波形变换。
+
+四项预处理测试和 M1/既有 CLI 回归共10项通过；三采样率重采样/缓存单测使用可计数 separator 替身，真实 VR 三包验收为44.1k，不能混称三采样率真实 VR 音质验证。修改范围 Black 格式化及 git diff --check 通过。人工听音 MANUAL/PENDING。M3～M6 尚未实施：联合训练、正式内置推理、波形 ONNX、真实质量/性能评估未验收。M2 提交推送成功后开始 M3。

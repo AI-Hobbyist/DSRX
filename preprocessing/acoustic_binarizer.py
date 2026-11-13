@@ -16,7 +16,7 @@ import librosa
 import numpy as np
 import torch
 
-from basics.base_binarizer import BaseBinarizer
+from basics.base_binarizer import BaseBinarizer, BinarizationError
 from basics.base_pe import BasePE
 from modules.fastspeech.tts_modules import LengthRegulator
 from modules.pe import initialize_pe
@@ -30,7 +30,7 @@ from utils.binarizer_utils import (
     get_tension_base_harmonic,
 )
 from utils.decomposed_waveform import DecomposedWaveform
-from utils.hparams import hparams
+from utils.hparams import hparams, mini_ddsp_config
 
 os.environ["OMP_NUM_THREADS"] = "1"
 ACOUSTIC_ITEM_ATTRIBUTES = [
@@ -75,10 +75,13 @@ class AcousticBinarizer(BaseBinarizer):
         self.lr = LengthRegulator()
         self.need_energy = hparams['use_energy_embed']
         self.need_breathiness = hparams['use_breathiness_embed']
-        self.need_voicing = hparams['use_voicing_embed']
-        self.need_tension = hparams['use_tension_embed']
-        assert hparams['mel_base'] == 'e', (
-            "Mel base must be set to \'e\' according to 2nd stage of the migration plan. "
+        self.need_voicing = hparams["use_voicing_embed"]
+        self.need_tension = hparams["use_tension_embed"]
+        self.paired_vocoder = mini_ddsp_config(hparams).get("enabled", False)
+        if self.paired_vocoder:
+            self.data_attrs = [*self.data_attrs, "sample_id", "augmentation_id"]
+        assert hparams["mel_base"] == "e", (
+            "Mel base must be set to 'e' according to 2nd stage of the migration plan. "
             "See https://github.com/openvpi/DiffSinger/releases/tag/v2.3.0 for more details."
         )
 
@@ -116,14 +119,28 @@ class AcousticBinarizer(BaseBinarizer):
 
         return meta_data_dict
 
+    def process_dataset(self, prefix, num_workers=0, apply_augmentation=False):
+        self._mini_ddsp_split = prefix
+        return super().process_dataset(prefix, num_workers, apply_augmentation)
+
     @torch.no_grad()
-    def process_item(self, item_name, meta_data, binarization_args):
-        waveform, _ = librosa.load(meta_data['wav_fn'], sr=hparams['audio_sample_rate'], mono=True)
+    def process_item(
+        self, item_name, meta_data, binarization_args, waveform=None, pair_metadata=None
+    ):
+        if waveform is None:
+            waveform, _ = librosa.load(
+                meta_data["wav_fn"], sr=hparams["audio_sample_rate"], mono=True
+            )
         mel = get_mel_torch(
-            waveform, hparams['audio_sample_rate'], num_mel_bins=hparams['audio_num_mel_bins'],
-            hop_size=hparams['hop_size'], win_size=hparams['win_size'], fft_size=hparams['fft_size'],
-            fmin=hparams['fmin'], fmax=hparams['fmax'],
-            device=self.device
+            waveform,
+            hparams["audio_sample_rate"],
+            num_mel_bins=hparams["audio_num_mel_bins"],
+            hop_size=hparams["hop_size"],
+            win_size=hparams["win_size"],
+            fft_size=hparams["fft_size"],
+            fmin=hparams["fmin"],
+            fmax=hparams["fmax"],
+            device=self.device,
         )
         length = mel.shape[0]
         seconds = length * hparams['hop_size'] / hparams['audio_sample_rate']
@@ -238,7 +255,62 @@ class AcousticBinarizer(BaseBinarizer):
         if hparams['use_speed_embed']:
             processed_input['speed'] = 1.
 
+        if self.paired_vocoder:
+            from preprocessing.mini_ddsp_cache import pairing_id, save_pair
+
+            pair_metadata = pair_metadata or {}
+            sample_id, augmentation_id = pairing_id(item_name, **pair_metadata)
+            # Fixed-width byte scalars match the existing indexed reader's
+            # NumPy scalar contract; HDF5 variable-length strings do not.
+            processed_input["sample_id"] = np.bytes_(sample_id)
+            processed_input["augmentation_id"] = np.bytes_(augmentation_id)
+            processed_input["_mini_ddsp_split"] = self._mini_ddsp_split
+            processed_input["uv"] = uv.astype(bool)
+            if "key_shift" in processed_input:
+                processed_input["key_shift"] = pair_metadata.get("key_shift", 0.0)
+            if "speed" in processed_input:
+                processed_input["speed"] = pair_metadata.get("speed", 1.0)
+            save_pair(processed_input, waveform)
         return processed_input
+
+    def process_paired_augmentation(
+        self, item, key_shift=0.0, speed=1.0, replace_spk_id=None
+    ):
+        waveform, _ = librosa.load(
+            item["wav_fn"], sr=hparams["audio_sample_rate"], mono=True
+        )
+        if key_shift != 0.0:
+            waveform = librosa.effects.pitch_shift(
+                waveform, sr=hparams["audio_sample_rate"], n_steps=key_shift
+            )
+        if speed != 1.0:
+            waveform = librosa.effects.time_stretch(waveform, rate=speed)
+        metadata = {
+            "wav_fn": item["wav_fn"],
+            "spk_id": item["spk_id"] if replace_spk_id is None else replace_spk_id,
+            "artifact_level": item["artifact_level"],
+            "spk_name": item["spk_name"],
+            "lang_seq": item["languages"],
+            "ph_seq": item["tokens"],
+            "ph_dur": item["ph_dur"] / speed,
+            "ph_text": item["ph_text"],
+        }
+        paired = self.process_item(
+            item["name"],
+            metadata,
+            self.binarization_args,
+            waveform=waveform,
+            pair_metadata={
+                "key_shift": key_shift,
+                "speed": speed,
+                "spk_id": replace_spk_id,
+            },
+        )
+        if paired is None:
+            raise BinarizationError(
+                f"Paired augmentation has no voiced frames: {item['name']}"
+            )
+        return paired
 
     def arrange_data_augmentation(self, data_iterator):
         aug_map = {}
@@ -360,4 +432,8 @@ class AcousticBinarizer(BaseBinarizer):
 
             total_scale += scale
 
+        if self.paired_vocoder:
+            for tasks in aug_map.values():
+                for task in tasks:
+                    task["func"] = self.process_paired_augmentation
         return aug_map

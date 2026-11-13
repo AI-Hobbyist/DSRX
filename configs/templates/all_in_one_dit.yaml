@@ -5,6 +5,9 @@ base_config:
 task_cls: training.all_in_one_task.AllInOneTask
 binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
 
+# Work sample rate of the shared VR separator weights.
+hnsep_sample_rate: 44100
+
 all_in_one:
   enabled: true
   mini_ddsp:
