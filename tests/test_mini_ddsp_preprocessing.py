@@ -1,4 +1,6 @@
 import copy
+import multiprocessing
+import os
 import pathlib
 import tempfile
 import unittest
@@ -7,10 +9,17 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from preprocessing.mini_ddsp_cache import pairing_id
+from preprocessing.mini_ddsp_cache import cache_directory, pairing_id
 from preprocessing.vocoder_binarizer import harmonic_amplitudes
 from utils.decomposed_waveform import DecomposedWaveform
 from utils.hparams import hparams
+
+
+def spawned_cache_directory(queue):
+    try:
+        queue.put(str(cache_directory()))
+    except RuntimeError as error:
+        queue.put(str(error))
 
 
 class MiniDDSPPreprocessingTests(unittest.TestCase):
@@ -39,6 +48,19 @@ class MiniDDSPPreprocessingTests(unittest.TestCase):
         hparams.clear()
         hparams.update(self.previous)
         self.temporary.cleanup()
+
+    def test_spawned_worker_inherits_run_cache_directory(self):
+        context = multiprocessing.get_context("spawn")
+        queue = context.Queue()
+        with patch.dict(os.environ, {"DSRX_MINI_DDSP_CACHE_DIR": self.temporary.name}):
+            worker = context.Process(target=spawned_cache_directory, args=(queue,))
+            worker.start()
+            actual = queue.get(timeout=60)
+            worker.join(timeout=60)
+        self.assertEqual(worker.exitcode, 0)
+        self.assertEqual(actual, self.temporary.name)
+        worker.close()
+        queue.close()
 
     def test_vr_cache_resamples_and_reuses_full_harmonic(self):
         class Separator:

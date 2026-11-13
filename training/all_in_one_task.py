@@ -256,6 +256,13 @@ class AllInOneTask(AcousticTask):
                             training=False,
                         )
                     )
+                    if self.use_vocoder:
+                        self._run_validation_step(
+                            AllInOneTask._dataset_vocoder_validation,
+                            self.acoustic_valid_dataset,
+                            sample,
+                            batch_idx,
+                        )
             else:
                 losses, weight = self._run_validation_step(
                     VarianceTask._validation_step,
@@ -275,6 +282,52 @@ class AllInOneTask(AcousticTask):
             return validation_step(self, sample, batch_idx, **kwargs)
         finally:
             self.valid_dataset = previous_dataset
+
+    @torch.inference_mode()
+    def _dataset_vocoder_validation(self, sample, batch_idx):
+        from utils.binarizer_utils import get_mel_torch
+
+        for index, data_index in enumerate(sample["indices"].tolist()):
+            if data_index >= hparams["num_valid_plots"]:
+                continue
+            paired = sample["vocoder"]
+            frames = int(paired["frame_lengths"][index])
+            samples = int(paired["sample_lengths"][index])
+            mel = sample["mel"][index, :frames]
+            f0 = sample["f0"][index : index + 1, :frames]
+            source = paired["waveform"][index, :samples]
+            reconstructed = self.vocoder.spec2wav_torch(mel[None], f0=f0)[0, :samples]
+            writer = self.logger.all_rank_experiment
+            tag = f"dataset_vocoder/{data_index}"
+            writer.add_audio(
+                f"{tag}/source",
+                source,
+                sample_rate=hparams["audio_sample_rate"],
+                global_step=self.global_step,
+            )
+            writer.add_audio(
+                f"{tag}/reconstruction",
+                reconstructed,
+                sample_rate=hparams["audio_sample_rate"],
+                global_step=self.global_step,
+            )
+            reconstructed_mel = get_mel_torch(
+                reconstructed.cpu().numpy(),
+                hparams["audio_sample_rate"],
+                num_mel_bins=hparams["audio_num_mel_bins"],
+                hop_size=hparams["hop_size"],
+                win_size=hparams["win_size"],
+                fft_size=hparams["fft_size"],
+                fmin=hparams["fmin"],
+                fmax=hparams["fmax"],
+                device=self.device,
+            )
+            reconstructed_mel = torch.from_numpy(reconstructed_mel).to(mel)
+            length = min(mel.shape[0], reconstructed_mel.shape[0])
+            # Reuse DiffSinger's existing vertical prediction/target/error view.
+            self.plot_mel(
+                data_index, mel[:length], reconstructed_mel[:length], "dataset_vocoder"
+            )
 
     def _on_validation_start(self):
         super()._on_validation_start()

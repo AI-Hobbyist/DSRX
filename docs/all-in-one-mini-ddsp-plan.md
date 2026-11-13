@@ -177,7 +177,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 7. ONNX 和部署包
 
-开启功能时导出 all-in-one 的声学—声码器视图：已有声学输入 → acoustic mel → 内置 Mini-DDSP → waveform。variance 保留现有独立导出与调度方式，整个交付包包含其必要文件；本任务不把离散时长处理强行合并成一个超大图。
+2026-11-13 用户修订：增加完整 all-in-one 单 ONNX 模式，包含 variance（时长、音高、唱法）→ acoustic → 内置 Mini-DDSP，默认波形推理仅需加载一个模型。原分开导出方式保留。完整单图须保留可编辑的预测结果与逐参数自动/手动覆盖接口，包括时长、F0、当前启用的唱法曲线及既有音色/速度/采样控制。输出波形、有效长度、mel、实际采用的F0/时长/唱法曲线，便于调节及检查。
 
 默认波形图输出 `waveform` 及有效长度，并保留 `mel`（F0 为已知输入或对应输出）供调试。需要外部 NSF 时，使用同一次导出附带的 mel-only 视图，避免仅取 mel 也执行 DDSP 合成。两种视图来自同一权重与特征元数据，不训练第二份声学模型。
 
@@ -189,7 +189,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 8. 实施阶段与验收
 
-阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1～M4 **PASS**；M5～M6 **NOT STARTED**。
+阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1～M5 **PASS**；M6 **NOT STARTED**（长期训练/训练后音质项目按用户决定SKIPPED）。
 
 | 阶段 | 实施范围 | 必需验收 |
 |---|---|---|
@@ -241,3 +241,38 @@ M4 **PASS**（2026-11-13）：AllInOneVocoder 与 build_all_in_one_vocoder 统�
 现有export_inference_ckpt.py已逐值保留全部state，不需要修改；37项model.vocoder状态及内置资源逐值一致，优化器被移除。该真实checkpoint训练文件178723106字节→推理文件67112193字节。产物/报告/真实CLI日志在artifacts/mini_ddsp_m4/（不提交）；checkpoint来自M3的12步，不能作为音质验收。四项新推理测试加旧CLI/空验证和M3接口回归共13项通过，覆盖相同mel/F0传入、B=2及契约逐项拒绝；Black修改范围与diff --check通过。
 
 M5～M6尚未实施：内置波形ONNX及真实质量/性能评估未验收。听音MANUAL/PENDING。M4提交推送成功后开始M5。
+### 2026-11-13 用户追加的试听与日志要求（实施中）
+
+随机seed42取150条opencpop录音：140训练、10验证，2033001224保留；其余验证仅保证未用于本轮DDSP训练，不宣称原声学预训练未见过。样本/源哈希清单在artifacts/mini_ddsp_preview/data150/selection.json。真实三包预处理完成：train acoustic/vocoder210条（含配对增强）、variance140条；valid三包各10条；源音频哈希不变。
+
+用户指定合成测试为la，要求包含预测唱法曲线、CUDA训练、配置级联模板并局部覆盖、TensorBoard loss/mel/试听。另新增数据集直接声码器重建试听和mel，必须复用现有val dataloader的同一样本/索引；mel复用既有上中下预测/真实/误差对比格式。通过TensorBoard event直接提取Images/Audio原记录供用户查看，不另画替代图。
+
+预览1000步CUDA实验在运行：RTX5060 Laptop GPU8151MiB，配置configs/experiments/all_in_one_mini_ddsp_preview.yaml级联原all-in-one模板和原checkpoint结构配置，warmup200/ramp200，每200步验证。记录不是M6正式完成声明。第200步TensorBoard原图/试听已提取至artifacts/mini_ddsp_preview/tensorboard_exports/step_200并发送。
+
+M5待解决：完整单图调度/手动控制尚未实现。已实现的声学+DDSP合并图在ORT默认优化下与mel-only图depth0结果不同；最小单帧重现1.4秒，声学节点和权重字节完全相同、无新增重名，关闭ORT优化后差异为0。需定位并修复具体优化触发，不能以放宽阈值交付。内部声码器独立图长帧FP32相位累积跨mod边界的问题已修正为FP64累积，三采样率B2/奇偶/长帧通过M1原阈值；更改尚未提交。新增val直接重建与UV幅度学习修正有10项训练/推理回归通过，尚未提交。
+
+### 2026-11-13 云端配置迁移与验收范围更正
+
+用户要求停止长时间模拟训练，后续云端训练。原150条预览已自然完成1000步，每200步验证；step1000的TensorBoard原图/音频已发送，不再将该预览描述为运行中。新的小数据预处理/训练仅检查能否跑通；需要长期实际训练才能完成的收敛、音质与训练后对照项目，记为 **SKIPPED（用户决定，未执行）**，不得写PASS。既有已实际执行的历史证据保留，不因本次跳过而改写。允许用小型随机权重模型验证导出功能，不以此证明音质。
+
+下载目录dsrx_cfg.7z与dsrx_cfg (1).7z SHA256一致：982e3af316eae680dcbc7342ba861b9898d303fe00c717e5f2ab5c7b77ef1120。原包解压至artifacts/dsrx_cfg_import；正式迁移配置为configs/experiments/all_in_one_mini_ddsp_cloud.yaml，中文词典原字节复制至dictionaries/opencpop-dsrx_cfg.txt。只继承configs/original/acoustic.yaml与variance.yaml，不依赖本机checkpoint或preview配置。仅保留opencpop，spk_id=0、num_spk=1、zh单语言；数据目录沿原包data/opencpop_zh。5条val为2033001224、2070002621、2012000457、2003000103、2082003039。val_with_variance直接选samples/02_不老梦_variance.ds；正式加载得到35条有效片段，原样本另9条词条不匹配片段按既有逻辑跳过。
+
+声学hidden_size=192、DSLight128通道8层，AUX为DSLight128通道4层，pitch/唱法后级为DSLight96通道6层，时长ResNet128通道3层，与50MB模板网络参数一致。energy预测/嵌入均关闭，其余时长/音高/唱法与Mini-DDSP启用。Muon_AdamW、lr=0.0006、BS64/50000frames、增强参数、StepLR的step_size=5000/gamma=0.8沿压缩包aco配置；补齐当前训练入口必需的scheduler_cls，未以preview的小batch替换。两流预算仍各取一半。
+
+真实试跑使用现成CSV/WAV的2条训练+5条val隔离副本，仅覆盖raw/binary路径，不重标注、不修改源文件。单进程三包预处理PASS。真实spawn多进程首次失败，定位为worker重读配置丢失运行期_mini_ddsp_cache_dir；已添加run-scoped继承环境变量，finally恢复旧环境，正式2进程三包预处理PASS。5项预处理回归（含真实spawn子进程）通过。日志artifacts/dsrx_cfg_import/cache-tests.log及preprocessing_smoke/preprocessing-two-workers.log。7条小样本不覆盖全词典的warning属于样本覆盖提示，不能称全量音素覆盖PASS。
+
+训练冒烟首次完成一次Muon更新后，4个DataLoader worker导致本机主内存耗尽；本机复跑仅覆盖ds_workers=0，保留BS、Muon、bf16及网络。正式云端配置保留ds_workers=4，预处理num_workers=2。正式train.py完成2次Muon更新、每次两路各5条val、samples联动推理、mel/音频记录及checkpoint保存，max_steps=2正常退出；val_loss=65.20仅为流程数据，不代表音质。checkpoint全参数有限、global_step=2、优化器和scheduler状态存在。三包读取检查通过：train acoustic8/variance2/vocoder8，valid均5；配对mel/F0逐值一致、波形长度正确、train/valid ID无交叉、临时缓存已清理、源CSV/WAV SHA256保持不变。报告artifacts/dsrx_cfg_import/preprocessing_smoke/report.json，训练日志同目录training.log。不得把warmup内冒烟称为收敛或完整joint日程验收。
+
+M5诊断新增证据：禁用ORT内存复用也使原图mel差异为0；离线BASIC优化序列化后重新载入，独立默认ORT执行动态waveform/mel/variance图通过，但与native acoustic eager仍有约4.18偏差，因此离线优化本身不构成修复，不得直接采用为PASS。诊断产物artifacts/mini_ddsp_m5/offline-validation.log。完整variance→acoustic→Mini-DDSP单文件与manual override仍未完成。
+
+### M5 最终验收（2026-11-13，覆盖前述诊断中状态）
+
+M5 **PASS**：新增正式`export.py all-in-one`入口，默认生成完整variance→时长归一化/手动时长→pitch→手动F0→singing→逐帧手动唱法→acoustic→Mini-DDSP单文件模型；同步提供完整mel-only、声学+声码器和原分离视图，`--split-only`显式保留分离方式。模型输出预测值和实际使用的时长/F0/唱法，手动控制语义与输入形状见docs/all-in-one-mini-ddsp-deployment.md。所有网络权重及版本化噪声内嵌；未关闭ORT优化，未放宽M1误差阈值。
+
+真实根因定位到长度调节器的整数`Pad(1,-1)`：单token在ORT常量折叠和内存复用下，前置边界可变成无效大整数，污染mel2ph/F0掩码。仅将该操作替换为等价zero-concat/slice；同时替换导出词起始标记的负padding，以及all-in-one variance内部LR。原始正式验证脚本RED、修改源码后重新正式导出GREEN；不采用离线优化掩盖偏差。
+
+正式CLI产物artifacts/mini_ddsp_m5/deploy_complete，checkpoint来自M3已训练12步实例（非质量模型，未新增训练）。scripts/validate_all_in_one_onnx_controls.py将两个完整视图复制到无源码/分离模型/权重的临时目录，以python -I和默认ORT执行18例：1/9/10/11/257/1025帧，单/多音素及词、自动/手动/混合、depth0及0.6；全部有限、实际时长总帧数/波形采样长度正确、手动F0及各唱法逐值保留，手动depth0完整mel-only与完整波形图mel一致。报告controls-report.json。
+
+scripts/validate_mini_ddsp_onnx.py在独立ORT执行6例（含真实272帧乐谱），波形对同mel/F0的eager DDSP最大绝对误差8.72e-7；depth0声学对native eager误差4.53e-6/1.34e-5，均满足既定rtol2e-4/atol2e-5。独立variance各图执行通过，显式NSF消费同契约导出mel/F0通过。报告complete_validation/report.json；日志export-complete.log、complete-validation.log。随机采样分支不跨不同运行时比较随机数逐值一致，只对相同导出mel执行声码器数值对照。
+
+22项DDSP/ONNX/控制器/训练梯度/推理/预处理回归通过；覆盖三采样率B2与T1/9/10/11/257/1025、嵌入噪声、UV监督、同val重建、spawn缓存继承。全模型接口验证使用真实小步checkpoint，不作为训练收敛或音质指标PASS。当前测试实例完整ONNX为77,454,501字节，完整mel-only为62,990,675字节，来源较宽旧权重，不能据此代表192宽云端模板体积。阶段提交/推送检查点完成后开始M6。

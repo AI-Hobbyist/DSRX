@@ -122,14 +122,16 @@ class MiniDDSP(nn.Module):
         return self._overlap_add(frames)
 
     def forward(self, mel, f0, lengths=None, return_components=False):
-        # Phase and DSP accumulation remain FP32 under mixed precision.
+        # Controls and synthesis use FP32 under mixed precision. Accumulate
+        # phase in FP64: long FP32 cumsums differ across eager/ORT kernels and
+        # can cross a modulo boundary, discontinuously changing phase inputs.
         f0 = f0.float()
         frequencies = f0[:, :, None] * self.harmonic_indices
         increments = (frequencies[:, 1:] + frequencies[:, :-1]) * (
             math.pi * self.hop_size / self.sample_rate
         )
-        phase = F.pad(torch.cumsum(increments, dim=1), (0, 0, 1, 0))
-        phase = torch.remainder(phase, 2 * math.pi)
+        phase = F.pad(torch.cumsum(increments.double(), dim=1), (0, 0, 1, 0))
+        phase = torch.remainder(phase, 2 * math.pi).float()
         if lengths is None:
             valid = torch.ones_like(f0, dtype=torch.bool)
         else:
@@ -172,7 +174,9 @@ class MiniDDSP(nn.Module):
         sample_f0 = F.interpolate(
             f0[:, None, :], size=count, mode="linear", align_corners=False
         ).squeeze(1)
-        cycles = torch.remainder(torch.cumsum(sample_f0 / self.sample_rate, dim=1), 1)
+        cycles = torch.remainder(
+            torch.cumsum(sample_f0.double() / self.sample_rate, dim=1), 1
+        ).float()
         triangle = torch.where(cycles < 0.2, cycles / 0.2, (1 - cycles) / 0.8)
         noise = (envelope * basis[None, :, :]).sum(1)
         noise = noise * (1 - voiced_ratio + voiced_ratio * triangle)

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import pathlib
 import pickle
 
@@ -16,7 +17,9 @@ def enabled():
 
 
 def cache_directory():
-    directory = hparams.get("_mini_ddsp_cache_dir")
+    directory = hparams.get("_mini_ddsp_cache_dir") or os.environ.get(
+        "DSRX_MINI_DDSP_CACHE_DIR"
+    )
     if not directory:
         raise RuntimeError("Mini-DDSP preprocessing must run through AllInOneBinarizer")
     return pathlib.Path(directory)

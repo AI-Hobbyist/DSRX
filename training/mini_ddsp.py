@@ -155,10 +155,10 @@ class MiniDDSPLoss(nn.Module):
             )
             if count <= 0:
                 raise ValueError("Paired sample has no valid waveform samples")
-            f0 = (
-                sample["f0"][index : index + 1, left:right]
-                * ~paired["uv"][index : index + 1, left:right]
-            )
+            # Match inference's interpolated acoustic F0. Zero UV amplitude
+            # targets must teach the controller to suppress harmonics rather
+            # than bypassing that supervision by forcing its F0 to zero.
+            f0 = sample["f0"][index : index + 1, left:right]
             target = paired["waveform"][
                 index : index + 1, start * self.hop : start * self.hop + count
             ]

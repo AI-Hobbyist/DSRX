@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
@@ -7,10 +8,40 @@ from torch import nn
 from modules.core.ddpm import GaussianDiffusion
 from modules.core.reflow import RectifiedFlow
 from training.all_in_one_task import AllInOneTask
-from training.mini_ddsp import joint_factor
+from training.mini_ddsp import MiniDDSPLoss, joint_factor
+from modules.vocoders.mini_ddsp import MiniDDSP
+from tests.test_mini_ddsp import config
 
 
 class MiniDDSPTrainingTests(unittest.TestCase):
+    def test_unvoiced_amplitude_is_learned_with_the_inference_f0_contract(self):
+        settings = config()
+        settings['win_size'] = 32
+        model = MiniDDSP(settings)
+        loss = MiniDDSPLoss(settings)
+        sample = {
+            "size": 1,
+            "mel": torch.full((1, 5, 8), -6.0),
+            "f0": torch.full((1, 5), 220.0),
+            "vocoder": {
+                "frame_lengths": torch.tensor([5]),
+                "sample_lengths": torch.tensor([80]),
+                "waveform": torch.zeros(1, 80),
+                "amplitude": torch.zeros(1, 5, 7),
+                "uv": torch.ones(1, 5, dtype=torch.bool),
+            },
+        }
+        losses = loss(
+            model,
+            sample,
+            SimpleNamespace(clean_out=None, aux_out=None),
+            None,
+            0,
+            training=False,
+        )
+        losses["ddsp_amplitude_loss"].backward()
+        self.assertTrue((model.output.bias.grad[:7] > 0).all())
+
     def test_reflow_clean_estimate_uses_the_training_velocity(self):
         flow = RectifiedFlow.__new__(RectifiedFlow)
         nn.Module.__init__(flow)

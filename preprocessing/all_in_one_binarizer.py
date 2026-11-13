@@ -1,3 +1,4 @@
+import os
 import pathlib
 import tempfile
 
@@ -17,6 +18,10 @@ class AllInOneBinarizer:
                 prefix=".mini-ddsp-", dir=binary_data_dir
             ) as cache:
                 hparams["_mini_ddsp_cache_dir"] = cache
+                # Spawn workers reload their config before this runtime key exists.
+                # An inherited, run-scoped environment value shares the same cache.
+                previous_cache = os.environ.get("DSRX_MINI_DDSP_CACHE_DIR")
+                os.environ["DSRX_MINI_DDSP_CACHE_DIR"] = cache
                 try:
                     AcousticBinarizer(
                         binary_data_dir=binary_data_dir / "acoustic"
@@ -29,6 +34,10 @@ class AllInOneBinarizer:
                     ).process()
                 finally:
                     hparams.pop("_mini_ddsp_cache_dir", None)
+                    if previous_cache is None:
+                        os.environ.pop("DSRX_MINI_DDSP_CACHE_DIR", None)
+                    else:
+                        os.environ["DSRX_MINI_DDSP_CACHE_DIR"] = previous_cache
             return
         AcousticBinarizer(binary_data_dir=binary_data_dir / "acoustic").process()
         VarianceBinarizer(binary_data_dir=binary_data_dir / "variance").process()

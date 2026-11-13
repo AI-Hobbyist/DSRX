@@ -17,6 +17,7 @@ from modules.vocoders.all_in_one import (
 from modules.vocoders.mini_ddsp import MiniDDSP
 from tests.test_mini_ddsp import config
 from utils.hparams import hparams
+from training.all_in_one_task import AllInOneTask
 
 
 class MiniDDSPInferenceTests(unittest.TestCase):
@@ -131,6 +132,47 @@ class MiniDDSPInferenceTests(unittest.TestCase):
         ):
             np.testing.assert_array_equal(waveform[start:stop], value)
         self.assertTrue(((waveform[30:35] >= 2) & (waveform[30:35] <= 3)).all())
+
+    def test_dataset_vocoder_preview_uses_the_same_validation_item(self):
+        hparams.update(
+            audio_sample_rate=24000,
+            audio_num_mel_bins=8,
+            hop_size=16,
+            win_size=64,
+            fft_size=64,
+            fmin=40,
+            fmax=12000,
+            num_valid_plots=1,
+        )
+        source = torch.sin(torch.arange(80) * (2 * torch.pi * 220 / 24000))
+        writer = SimpleNamespace(add_audio=unittest.mock.Mock())
+        plot = unittest.mock.Mock()
+        task = SimpleNamespace(
+            logger=SimpleNamespace(all_rank_experiment=writer),
+            global_step=200,
+            device="cpu",
+            plot_mel=plot,
+            vocoder=SimpleNamespace(spec2wav_torch=lambda mel, f0: source[None] * 0.5),
+        )
+        sample = {
+            "indices": torch.tensor([0]),
+            "mel": torch.zeros(1, 5, 8),
+            "f0": torch.full((1, 5), 220.0),
+            "vocoder": {
+                "frame_lengths": torch.tensor([5]),
+                "sample_lengths": torch.tensor([80]),
+                "waveform": source[None],
+            },
+        }
+        AllInOneTask._dataset_vocoder_validation(task, sample, 0)
+        self.assertEqual(writer.add_audio.call_count, 2)
+        torch.testing.assert_close(writer.add_audio.call_args_list[0].args[1], source)
+        torch.testing.assert_close(
+            writer.add_audio.call_args_list[1].args[1], source * 0.5
+        )
+        self.assertEqual(plot.call_args.args[0], 0)
+        self.assertEqual(plot.call_args.args[3], "dataset_vocoder")
+        self.assertEqual(plot.call_args.args[1].shape, plot.call_args.args[2].shape)
 
 
 if __name__ == "__main__":

@@ -297,6 +297,45 @@ def nsf_hifigan(
         exit(-1)
 
 
-if __name__ == '__main__':
-    check_pytorch_version()
+@main.command(
+    name="all-in-one",
+    help="Export a complete variance/acoustic/Mini-DDSP model and split views.",
+)
+@click.option(
+    "--exp", required=True, callback=lambda ctx, param, value: find_exp(value)
+)
+@click.option("--ckpt", type=click.IntRange(min=0))
+@click.option(
+    "--out", type=click.Path(file_okay=False, path_type=pathlib.Path), required=True
+)
+@click.option("--name", help="Deployment model basename")
+@click.option(
+    "--split-only",
+    is_flag=True,
+    help="Export separate component views without the complete pipeline graph.",
+)
+def all_in_one(exp, ckpt, out, name, split_only):
+    previous_argv = sys.argv
+    try:
+        sys.argv = [previous_argv[0], "--exp_name", exp, "--infer"]
+        set_hparams()
+    finally:
+        sys.argv = previous_argv
+    hparams["exp_name"] = name or pathlib.Path(exp).name
+    from deployment.exporters.all_in_one_exporter import DiffSingerAllInOneExporter
+
+    exporter = DiffSingerAllInOneExporter(
+        device="cpu",
+        cache_dir=out / ".export-cache",
+        ckpt_steps=ckpt,
+        split_only=split_only,
+    )
+    exporter.export(out)
+
+
+if __name__ == "__main__":
+    # The new all-in-one path uses export_onnx's legacy-exporter selection on
+    # modern PyTorch. Preserve the existing version gate for older commands.
+    if len(sys.argv) < 2 or sys.argv[1] != "all-in-one":
+        check_pytorch_version()
     main()
