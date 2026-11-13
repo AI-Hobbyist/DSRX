@@ -18,3 +18,4 @@ tensorboard
 tensorboardX
 torchmetrics
 tqdm
+setuptools<82.0.0
