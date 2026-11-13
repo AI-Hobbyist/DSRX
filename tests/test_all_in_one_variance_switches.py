@@ -15,7 +15,15 @@ def load_task_constructor(hparams):
     task = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == 'AllInOneTask')
     constructor = next(node for node in task.body if isinstance(node, ast.FunctionDef) and node.name == '__init__')
     task.body = [constructor]
-    module.body = [task]
+    config_module = ast.parse(
+        (ROOT / "utils" / "hparams.py").read_text(encoding="utf-8")
+    )
+    config_helper = next(
+        node
+        for node in config_module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "mini_ddsp_config"
+    )
+    module.body = [config_helper, task]
 
     class AcousticTask:
         def __init__(self):

@@ -1,6 +1,6 @@
 # All-in-one 内置 Mini-DDSP 联合训练计划
 
-日期：2026-11-12。实施更新：2026-11-13，M1、M2 自动验收通过；M3～M6 尚未开始。
+日期：2026-11-12。实施更新：2026-11-13，M1～M3 自动验收通过；M4～M6 尚未开始。
 
 ## 1. 最终需求与范围
 
@@ -189,7 +189,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 8. 实施阶段与验收
 
-阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1、M2 **PASS**；M3～M6 **NOT STARTED**。
+阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1～M3 **PASS**；M4～M6 **NOT STARTED**。
 
 | 阶段 | 实施范围 | 必需验收 |
 |---|---|---|
@@ -222,4 +222,14 @@ VR 完整 harmonic 缓存位于本轮临时目录，身份包含波形、模型�
 
 真实自动验收：scripts/validate_mini_ddsp_data.py --singing on/off 分别使用2001000001、2001000002训练及2033001224留出，seed42。每次 acoustic/vocoder train=10/10、valid=1/1，variance train=2、valid=1，唯一配对11、VR调用11（无重复分离）。覆盖单独变调、单独变速及组合，配对 mel/F0 逐值一致，幅度有限且形状正确，源 wav/标注 SHA256 不变，train/valid ID 无交叉。两条路径完整报告分别在 artifacts/mini_ddsp_m2/singing_on/report.json 和 singing_off/report.json（不提交数据）。增强音频与旧频谱增强的数值分布不同，仅本开关路径采用真实波形变换。
 
-四项预处理测试和 M1/既有 CLI 回归共10项通过；三采样率重采样/缓存单测使用可计数 separator 替身，真实 VR 三包验收为44.1k，不能混称三采样率真实 VR 音质验证。修改范围 Black 格式化及 git diff --check 通过。人工听音 MANUAL/PENDING。M3～M6 尚未实施：联合训练、正式内置推理、波形 ONNX、真实质量/性能评估未验收。M2 提交推送成功后开始 M3。
+四项预处理测试和 M1/既有 CLI 回归共10项通过；三采样率重采样/缓存单测使用可计数 separator 替身，真实 VR 三包验收为44.1k，不能混称三采样率真实 VR 音质验证。修改范围 Black 格式化及 git diff --check 通过。人工听音 MANUAL/PENDING。M2 已提交推送16b1d6a17b9c86edae7a81a9ea854f14ba5aac66，远端确认一致。
+
+M3 **PASS**（2026-11-13）：新增 PairedAcousticDataset，初始化按 sample_id 建索引并在缺失时提示重新预处理，读取时校验同一 mel/F0，配对 Collater 保留帧/采样长度。原 training_stream_count=2 和整除2预算保持不变。MiniDDSPLoss 采用同位置短片段、控制器感受野及合成窗上下文，padding 不进入统计；固定窗口来自公共 win_size 的半倍/一倍/二倍，线性幅度及 log 幅度 L1 加谐波幅度监督，warmup/ramp/joint 分开记录。真实静音片段曾将相对频谱分母损失放大到5.2e7，改为绝对频谱 L1 后损失正常（最终训练6.28～20.03）。
+
+Reflow 的可选干净谱出口使用 x_t+(1-t)*v_pred；DDPM 按其实际 alpha/noise 还原 x0。默认返回及既有损失不变。预测谱反归一化后进入 vocoder，辅助分支尊重原梯度缩放。只允许完整新增 vocoder 初始化，其他缺失/多余或部分 vocoder 均拒绝，严格加载保留；原 checkpoint 特征开关不得随测试资料多开。恢复使用正常 Lightning 全模型/优化器状态和 global_step。
+
+真实自动验收：scripts/validate_mini_ddsp_training.py，seed42，原100000步声学/variance权重＋新 vocoder，使用 M2 唱法开启包，FP32，acoustic1+variance1，segment32，warmup2/ramp4，12步（第6步保存、恢复）。单独 backward ddsp_joint_loss，未加入原声学/variance损失：vocoder32个梯度张量L1=1073.37、声学encoder43个=40.97、token embedding1个=0.35188、主预测骨干92个=485.95，全部非零有限。额外非零padding不改变有效波形/幅度损失（逐值相等）。完整优化器动量恢复逐值相等，恢复后的joint factor正确；两路真实留出验证loss=3.03185，CUDA峰值855335424字节。报告/完整checkpoint位于artifacts/mini_ddsp_m3/（不提交）。12步仅验证联合训练路径，不作为音质训练完成。
+
+22项单元/回归通过，覆盖参数化公式、原声学训练、默认关闭、预处理及all-in-one CLI/唱法开关/空验证。既有AST隔离测试加入真实配置helper的AST，保持其轻量隔离目的。Black仅作用新文件和修改范围，diff --check通过。测试脚本的中途保存使用标准训练回调；没有修改既有BaseTask保存机制。num_valid_plots=0使原绘图绑定的曲线指标未更新并产生warning，不作为这些指标PASS；本轮验证的是实际loss。
+
+M4～M6 尚未实施：正式内置默认推理与NSF切换、波形ONNX、真实质量/性能评估未验收。听音MANUAL/PENDING。M3提交推送成功后开始M4。

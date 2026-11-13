@@ -121,7 +121,7 @@ class AcousticTask(BaseTask):
             raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
         self.register_validation_loss('mel_loss')
 
-    def run_model(self, sample, infer=False, model=None):
+    def run_model(self, sample, infer=False, model=None, return_output=False):
         model = self.model if model is None else model
         txt_tokens = sample['tokens']  # [B, T_ph]
         target = sample['mel']  # [B, T_s, M]
@@ -144,10 +144,18 @@ class AcousticTask(BaseTask):
         else:
             languages = None
         output: ShallowDiffusionOutput = model(
-            txt_tokens, mel2ph=mel2ph, f0=f0, **variances,
-            key_shift=key_shift, speed=speed,
-            spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
-            gt_mel=target, infer=infer
+            txt_tokens,
+            mel2ph=mel2ph,
+            f0=f0,
+            **variances,
+            key_shift=key_shift,
+            speed=speed,
+            spk_embed_id=spk_embed_id,
+            artifact_level=artifact_level,
+            languages=languages,
+            gt_mel=target,
+            infer=infer,
+            return_clean=return_output and not infer,
         )
 
         if infer:
@@ -173,7 +181,7 @@ class AcousticTask(BaseTask):
                     raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
                 losses['mel_loss'] = mel_loss
 
-            return losses
+            return (losses, output) if return_output else losses
 
     def on_train_start(self):
         if self.use_vocoder and self.vocoder.get_device() != self.device:

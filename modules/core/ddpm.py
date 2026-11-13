@@ -219,13 +219,17 @@ class GaussianDiffusion(nn.Module):
                 extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def p_losses(self, x_start, t, cond, noise=None, valid_mask=None):
+    def p_losses(
+        self, x_start, t, cond, noise=None, valid_mask=None, return_clean=False
+    ):
         if noise is None:
             noise = torch.randn_like(x_start)
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         x_recon = self._run_denoise(x_noisy, t, cond, valid_mask=valid_mask)
 
+        if return_clean:
+            return x_recon, noise, self.predict_start_from_noise(x_noisy, t, x_recon)
         return x_recon, noise
 
     def inference(self, cond, b=1, x_start=None, device=None, valid_mask=None):
@@ -376,19 +380,35 @@ class GaussianDiffusion(nn.Module):
         x = x.transpose(2, 3).squeeze(1)  # [B, F, M, T] => [B, T, M] or [B, F, T, M]
         return x
 
-    def forward(self, condition, gt_spec=None, src_spec=None, infer=True, valid_mask=None):
+    def forward(
+        self,
+        condition,
+        gt_spec=None,
+        src_spec=None,
+        infer=True,
+        valid_mask=None,
+        return_clean=False,
+    ):
         """
-            conditioning diffusion, use fastspeech2 encoder output as the condition
+        conditioning diffusion, use fastspeech2 encoder output as the condition
         """
         cond = condition.transpose(1, 2)
         b, device = condition.shape[0], condition.device
 
         if not infer:
             # gt_spec: [B, T, M] or [B, F, T, M]
-            spec = self.norm_spec(gt_spec).transpose(-2, -1)  # [B, M, T] or [B, F, M, T]
+            spec = self.norm_spec(gt_spec).transpose(
+                -2, -1
+            )  # [B, M, T] or [B, F, M, T]
             if self.num_feats == 1:
                 spec = spec[:, None, :, :]  # [B, F=1, M, T]
             t = torch.randint(0, self.k_step, (b,), device=device).long()
+            if return_clean:
+                x_recon, noise, clean = self.p_losses(
+                    spec, t, cond=cond, valid_mask=valid_mask, return_clean=True
+                )
+                clean = self.denorm_spec(clean.transpose(-2, -1).squeeze(1))
+                return (x_recon, noise), clean
             x_recon, noise = self.p_losses(spec, t, cond=cond, valid_mask=valid_mask)
             return x_recon, noise
         else:

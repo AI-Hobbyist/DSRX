@@ -10,7 +10,7 @@ from inference.ds_variance import DiffSingerVarianceInfer
 from modules.toplevel import DiffSingerAllInOne
 from training.acoustic_task import AcousticDataset, AcousticTask
 from training.variance_task import VarianceDataset, VarianceTask
-from utils.hparams import hparams
+from utils.hparams import hparams, mini_ddsp_config
 from utils.plot import spec_to_figure
 from utils.training_utils import DsBatchSampler
 from utils.variance_validation import (
@@ -58,6 +58,7 @@ class AllInOneTask(AcousticTask):
         self.all_in_one_samplers = {}
         self.variance_validation_language = None
         self.variance_validation_speakers = []
+        self.mini_ddsp_settings = mini_ddsp_config(hparams)
         super().__init__()
 
     def _build_model(self):
@@ -66,16 +67,52 @@ class AllInOneTask(AcousticTask):
             out_dims=hparams['audio_num_mel_bins']
         )
 
+    def load_finetune_ckpt(self, state_dict):
+        if not self.mini_ddsp_settings.get("enabled", False):
+            return super().load_finetune_ckpt(state_dict)
+        expected = self.state_dict()
+        missing = set(expected) - set(state_dict)
+        unexpected = set(state_dict) - set(expected)
+        vocoder_keys = {key for key in expected if key.startswith("model.vocoder.")}
+        if unexpected or (missing and missing != vocoder_keys):
+            raise RuntimeError(
+                f"Mini-DDSP initialization only permits a complete new vocoder; "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        initialized = dict(state_dict)
+        for key in sorted(missing):
+            initialized[key] = expected[key]
+            print(f"| Initialized new Mini-DDSP state: {key}")
+        self.load_state_dict(initialized, strict=True)
+
     def build_losses_and_metrics(self):
         AcousticTask.build_losses_and_metrics(self)
         VarianceTask.build_losses_and_metrics(self)
+        if self.mini_ddsp_settings.get("enabled", False):
+            from training.mini_ddsp import MiniDDSPLoss
+
+            if self.use_shallow_diffusion and not self.train_diffusion:
+                raise ValueError(
+                    "Joint Mini-DDSP requires train_diffusion=true for the main predictor"
+                )
+            self.ddsp_loss = MiniDDSPLoss(hparams)
+            names = ["ddsp_spectral_loss", "ddsp_amplitude_loss", "ddsp_joint_loss"]
+            if self.use_shallow_diffusion and self.train_aux_decoder:
+                names.append("ddsp_aux_joint_loss")
+            for name in names:
+                self.register_validation_loss(name)
 
     def setup(self, stage):
-        binary_data_dir = pathlib.Path(hparams['binary_data_dir'])
-        self.acoustic_train_dataset = AcousticDataset(
-            'train', data_dir=binary_data_dir / 'acoustic'
+        binary_data_dir = pathlib.Path(hparams["binary_data_dir"])
+        acoustic_dataset = AcousticDataset
+        if self.mini_ddsp_settings.get("enabled", False):
+            from training.mini_ddsp import PairedAcousticDataset
+
+            acoustic_dataset = PairedAcousticDataset
+        self.acoustic_train_dataset = acoustic_dataset(
+            "train", data_dir=binary_data_dir / "acoustic"
         )
-        self.acoustic_valid_dataset = AcousticDataset(
+        self.acoustic_valid_dataset = acoustic_dataset(
             'valid', data_dir=binary_data_dir / 'acoustic'
         )
         self.variance_train_dataset = VarianceDataset(
@@ -161,14 +198,29 @@ class AllInOneTask(AcousticTask):
             sampler.set_epoch(self.current_epoch)
 
     def _training_step(self, sample):
-        acoustic_losses = AcousticTask.run_model(
-            self, sample['acoustic'], model=self.model.acoustic
-        )
+        if self.mini_ddsp_settings.get("enabled", False):
+            acoustic_losses, output = AcousticTask.run_model(
+                self, sample["acoustic"], model=self.model.acoustic, return_output=True
+            )
+            acoustic_losses.update(
+                self.ddsp_loss(
+                    self.model.vocoder,
+                    sample["acoustic"],
+                    output,
+                    self.model.acoustic,
+                    self.global_step,
+                    training=True,
+                )
+            )
+        else:
+            acoustic_losses = AcousticTask.run_model(
+                self, sample["acoustic"], model=self.model.acoustic
+            )
         variance_losses = VarianceTask.run_model(
-            self, sample['variance'], model=self.model.variance
+            self, sample["variance"], model=self.model.variance
         )
         losses = {**acoustic_losses, **variance_losses}
-        batch_size = sample['acoustic']['size'] + sample['variance']['size']
+        batch_size = sample["acoustic"]["size"] + sample["variance"]["size"]
         return sum(losses.values()), {**losses, 'batch_size': float(batch_size)}
 
     def validation_step(self, sample, batch_idx, dataloader_idx=0):
@@ -181,11 +233,27 @@ class AllInOneTask(AcousticTask):
                     self.acoustic_valid_dataset, sample, batch_idx,
                     model=self.model.acoustic
                 )
+                if self.mini_ddsp_settings.get("enabled", False):
+                    _, output = AcousticTask.run_model(
+                        self, sample, model=self.model.acoustic, return_output=True
+                    )
+                    losses.update(
+                        self.ddsp_loss(
+                            self.model.vocoder,
+                            sample,
+                            output,
+                            self.model.acoustic,
+                            self.global_step,
+                            training=False,
+                        )
+                    )
             else:
                 losses, weight = self._run_validation_step(
                     VarianceTask._validation_step,
-                    self.variance_valid_dataset, sample, batch_idx,
-                    model=self.model.variance
+                    self.variance_valid_dataset,
+                    sample,
+                    batch_idx,
+                    model=self.model.variance,
                 )
         losses = {'total_loss': sum(losses.values()), **losses}
         for name, value in losses.items():

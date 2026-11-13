@@ -40,25 +40,44 @@ class RectifiedFlow(nn.Module):
     def _run_velocity(self, x, t, cond, valid_mask=None):
         return run_backbone(self.velocity_fn, x, t, cond, valid_mask=valid_mask)
 
-    def p_losses(self, x_end, t, cond, valid_mask=None):
+    def p_losses(self, x_end, t, cond, valid_mask=None, return_clean=False):
         x_start = torch.randn_like(x_end)
         x_t = x_start + t[:, None, None, None] * (x_end - x_start)
         v_pred = self._run_velocity(
             x_t, t * self.time_scale_factor, cond, valid_mask=valid_mask
         )
 
+        if return_clean:
+            clean = x_t + (1 - t[:, None, None, None]) * v_pred
+            return v_pred, x_end - x_start, clean
         return v_pred, x_end - x_start
 
-    def forward(self, condition, gt_spec=None, src_spec=None, infer=True, valid_mask=None):
+    def forward(
+        self,
+        condition,
+        gt_spec=None,
+        src_spec=None,
+        infer=True,
+        valid_mask=None,
+        return_clean=False,
+    ):
         cond = condition.transpose(1, 2)
         b, device = condition.shape[0], condition.device
 
         if not infer:
             # gt_spec: [B, T, M] or [B, F, T, M]
-            spec = self.norm_spec(gt_spec).transpose(-2, -1)  # [B, M, T] or [B, F, M, T]
+            spec = self.norm_spec(gt_spec).transpose(
+                -2, -1
+            )  # [B, M, T] or [B, F, M, T]
             if self.num_feats == 1:
                 spec = spec[:, None, :, :]  # [B, F=1, M, T]
             t = self.t_start + (1.0 - self.t_start) * torch.rand((b,), device=device)
+            if return_clean:
+                v_pred, v_gt, clean = self.p_losses(
+                    spec, t, cond=cond, valid_mask=valid_mask, return_clean=True
+                )
+                clean = self.denorm_spec(clean.transpose(-2, -1).squeeze(1))
+                return (v_pred, v_gt, t), clean
             v_pred, v_gt = self.p_losses(spec, t, cond=cond, valid_mask=valid_mask)
             return v_pred, v_gt, t
         else:

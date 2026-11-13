@@ -24,9 +24,11 @@ from utils.hparams import hparams, mini_ddsp_config
 
 
 class ShallowDiffusionOutput:
-    def __init__(self, *, aux_out=None, diff_out=None):
+
+    def __init__(self, *, aux_out=None, diff_out=None, clean_out=None):
         self.aux_out = aux_out
         self.diff_out = diff_out
+        self.clean_out = clean_out
 
 
 class DiffSingerAllInOne(CategorizedModule):
@@ -98,13 +100,30 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
             raise NotImplementedError(self.diffusion_type)
 
     def forward(
-            self, txt_tokens, mel2ph, f0, key_shift=None, speed=None,
-            spk_embed_id=None, artifact_level=None, languages=None, gt_mel=None, infer=True, **kwargs
+        self,
+        txt_tokens,
+        mel2ph,
+        f0,
+        key_shift=None,
+        speed=None,
+        spk_embed_id=None,
+        artifact_level=None,
+        languages=None,
+        gt_mel=None,
+        infer=True,
+        return_clean=False,
+        **kwargs,
     ) -> ShallowDiffusionOutput:
         condition = self.fs2(
-            txt_tokens, mel2ph, f0, key_shift=key_shift, speed=speed,
-            spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
-            **kwargs
+            txt_tokens,
+            mel2ph,
+            f0,
+            key_shift=key_shift,
+            speed=speed,
+            spk_embed_id=spk_embed_id,
+            artifact_level=artifact_level,
+            languages=languages,
+            **kwargs,
         )
         valid_mask = mel2ph > 0
         if infer:
@@ -131,18 +150,38 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
                     aux_out = None
                 if self.train_diffusion:
                     diff_out = self.diffusion(
-                        condition, gt_spec=gt_mel, infer=False, valid_mask=valid_mask
+                        condition,
+                        gt_spec=gt_mel,
+                        infer=False,
+                        valid_mask=valid_mask,
+                        return_clean=return_clean,
                     )
                 else:
                     diff_out = None
-                return ShallowDiffusionOutput(aux_out=aux_out, diff_out=diff_out)
+                clean_out = None
+                if return_clean and diff_out is not None:
+                    diff_out, clean_out = diff_out
+                    clean_out = clean_out * valid_mask[:, :, None]
+                return ShallowDiffusionOutput(
+                    aux_out=aux_out, diff_out=diff_out, clean_out=clean_out
+                )
 
             else:
                 aux_out = None
                 diff_out = self.diffusion(
-                    condition, gt_spec=gt_mel, infer=False, valid_mask=valid_mask
+                    condition,
+                    gt_spec=gt_mel,
+                    infer=False,
+                    valid_mask=valid_mask,
+                    return_clean=return_clean,
                 )
-                return ShallowDiffusionOutput(aux_out=aux_out, diff_out=diff_out)
+                clean_out = None
+                if return_clean:
+                    diff_out, clean_out = diff_out
+                    clean_out = clean_out * valid_mask[:, :, None]
+                return ShallowDiffusionOutput(
+                    aux_out=aux_out, diff_out=diff_out, clean_out=clean_out
+                )
 
 
 class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
