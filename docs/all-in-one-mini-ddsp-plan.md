@@ -1,6 +1,6 @@
 # All-in-one 内置 Mini-DDSP 联合训练计划
 
-日期：2026-11-12。实施更新：2026-11-13，M1～M4 自动验收通过；M5～M6 尚未开始。
+日期：2026-11-12。最终实施更新：2026-11-13，M1～M6实现与自动验收完成；长期收敛训练及训练后音质评估依用户决定SKIPPED。最终结果见all-in-one-mini-ddsp-results.md。
 
 ## 1. 最终需求与范围
 
@@ -19,7 +19,7 @@
 
 ## 2. 可行性分析与源码依据
 
-结论：**可行，需要扩展现有模型、配对数据流和导出图，不能只挂接现有 DDSP 推理适配器。** 以下为静态分析，尚未运行新实现。
+原始设计结论：**可行，需要扩展现有模型、配对数据流和导出图，不能只挂接现有 DDSP 推理适配器。** 以下保留设计时的静态依据；实施及验证结果见第8～9节。
 
 | 现状证据 | 判断及所需改动 |
 |---|---|
@@ -189,7 +189,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 8. 实施阶段与验收
 
-阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1～M5 **PASS**；M6 **NOT STARTED**（长期训练/训练后音质项目按用户决定SKIPPED）。
+阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。最终 M1～M5 **PASS**；M6 **DONE**（流程/性能PASS；长期训练/收敛后音质及频谱/F0质量收益按用户决定SKIPPED）。
 
 | 阶段 | 实施范围 | 必需验收 |
 |---|---|---|
@@ -207,6 +207,8 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 所有训练/构建/测试前台 PowerShell 运行，输出 Tee 至 build.log，立即检查退出码并读失败日志。不启动 GUI，不修改 ref_only 源码，不顺带修复无关功能。
 
 ## 9. 当前交付状态
+
+以下按实施时间保留阶段记录；后面的最终验收覆盖此前“未开始/待解决”状态。最终交付矩阵、资源大小、测量范围和SKIPPED项目见[交付结果](all-in-one-mini-ddsp-results.md)。
 
 M1 **PASS**（2026-11-13）：五份 all-in-one 模板默认关闭；内部 MiniDDSP 持有控制器、分组合成、Hann/window/索引和版本化噪声基底。配置加载拒绝非 all-in-one 误开，关闭时不构造模块、不增加 checkpoint 参数。噪声由固定 seed=1729 的互斥 FFT 频带生成，持久保存，不读取参考目录或外部噪声文件。Mini-DDSP MIT 许可保存在 docs/licenses/mini-ddsp.txt。
 
@@ -276,3 +278,9 @@ M5 **PASS**：新增正式`export.py all-in-one`入口，默认生成完整varia
 scripts/validate_mini_ddsp_onnx.py在独立ORT执行6例（含真实272帧乐谱），波形对同mel/F0的eager DDSP最大绝对误差8.72e-7；depth0声学对native eager误差4.53e-6/1.34e-5，均满足既定rtol2e-4/atol2e-5。独立variance各图执行通过，显式NSF消费同契约导出mel/F0通过。报告complete_validation/report.json；日志export-complete.log、complete-validation.log。随机采样分支不跨不同运行时比较随机数逐值一致，只对相同导出mel执行声码器数值对照。
 
 22项DDSP/ONNX/控制器/训练梯度/推理/预处理回归通过；覆盖三采样率B2与T1/9/10/11/257/1025、嵌入噪声、UV监督、同val重建、spawn缓存继承。全模型接口验证使用真实小步checkpoint，不作为训练收敛或音质指标PASS。当前测试实例完整ONNX为77,454,501字节，完整mel-only为62,990,675字节，来源较宽旧权重，不能据此代表192宽云端模板体积。阶段提交/推送检查点完成后开始M6。
+
+M5已提交推送ef0ffa332daa45f2eff6ac7d1a9fbd9f790978fa，远端同名分支核对一致。M6现开始：固定使用已存在cloud_smoke第2步checkpoint及既有5条留出包，不再训练；时延/显存/大小为工程测量，收敛后频谱/F0质量收益与长期训练SKIPPED（用户决定）。
+
+### M6 最终交付验收（2026-11-13）
+
+M6 DONE：云端尺寸假模型18例独立完整ORT控制、la乐谱20步全预测（362帧/185344采样）、资源内嵌/无外部依赖审计通过；同5条val的真实未改动2步声码器完成CUDA DDSP/NSF测量，完整模型61,343,381字节。零自动时长不再阻止手动override，Torch/ORT回归通过。最终31项单元/回归通过，Black与diff --check通过。结果、复测入口、配置/权重来源、具体成本和逐项验收矩阵见all-in-one-mini-ddsp-results.md。长期收敛训练、收敛后音质与频谱/F0收益按用户决定SKIPPED；听音MANUAL/PENDING，不冒充PASS。无剩余必需实施项。

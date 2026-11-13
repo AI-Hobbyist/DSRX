@@ -48,7 +48,7 @@ T 为 `note_dur.sum()`，也应等于 `word_dur.sum()`；手动时长使用相�
 
 ## 输出
 
-完整波形图输出 `predicted_durations`、实际使用的 `durations`、`predicted_pitch`（MIDI）、实际 `pitch`（MIDI）和 `f0`（Hz）、各 `predicted_<唱法参数>` 与实际唱法参数，以及 `mel [1,T,M]`、`waveform [1,T*hop_size]`、`waveform_lengths [1]`。手动模式下预测出口仍可用于对比；实际出口是声学与声码器真正消费的值。mel-only 图保留所有控制出口，去掉波形出口及声码器资源。
+完整波形图输出 `predicted_durations`（按词归一化/取整的预测）、实际使用且已对齐总帧数的 `durations`、`predicted_pitch`（MIDI）、实际 `pitch`（MIDI）和 `f0`（Hz）、各 `predicted_<唱法参数>` 与实际唱法参数，以及 `mel [1,T,M]`、`waveform [1,T*hop_size]`、`waveform_lengths [1]`。手动模式下预测出口仍可用于对比；实际出口是声学与声码器真正消费的值，手动时长不依赖自动预测能否展开。mel-only 图保留所有控制出口，去掉波形出口及声码器资源。
 
 ## 功能验证
 

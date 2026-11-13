@@ -44,7 +44,7 @@ class DurationControls(nn.Module):
         totals = (membership * durations[:, None, :]).sum(dim=2)
         ratio = word_dur.float() / totals.clamp(min=1e-5)
         scaled = durations * torch.gather(ratio, 1, ph2word - 1)
-        predicted = self.align(scaled.round().long(), note_dur.sum())
+        predicted = scaled.round().long()
         chosen = torch.where(use_manual_durations, manual_durations, predicted)
         return predicted, self.align(chosen, note_dur.sum())
 

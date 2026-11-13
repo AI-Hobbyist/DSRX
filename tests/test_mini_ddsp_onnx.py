@@ -21,6 +21,45 @@ from tests.test_mini_ddsp import config
 
 
 class MiniDDSPOnnxTests(unittest.TestCase):
+    def test_manual_duration_does_not_require_valid_automatic_predictions(self):
+        manual = torch.tensor([[2, 3]])
+        predicted, actual = DurationControls()(
+            torch.zeros(1, 2),
+            torch.tensor([[2]]),
+            torch.tensor([[5]]),
+            torch.tensor([[5]]),
+            manual,
+            torch.tensor(True),
+        )
+        torch.testing.assert_close(predicted, torch.zeros(1, 2, dtype=torch.long))
+        torch.testing.assert_close(actual, manual)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "manual_duration.onnx"
+            args = (
+                torch.ones(1, 2),
+                torch.tensor([[2]]),
+                torch.tensor([[5]]),
+                torch.tensor([[5]]),
+                manual,
+                torch.tensor(True),
+            )
+            names = ["raw", "word_div", "word_dur", "note_dur", "manual", "override"]
+            export_onnx(
+                DurationControls(),
+                args,
+                path,
+                input_names=names,
+                output_names=["predicted", "actual"],
+                opset_version=15,
+            )
+            values = {name: value.numpy() for name, value in zip(names, args)}
+            values["raw"] = np.zeros((1, 2), np.float32)
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = 1
+            session = ort.InferenceSession(str(path), options)
+            _, actual = session.run(None, values)
+            np.testing.assert_array_equal(actual, manual.numpy())
+
     def test_manual_controls_and_native_duration_normalization(self):
         raw = torch.tensor([[3.0, 1.0, 2.0, 4.0]])
         word_div = torch.tensor([[2, 2]])

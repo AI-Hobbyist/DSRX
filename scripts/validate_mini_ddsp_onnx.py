@@ -13,6 +13,8 @@ import onnx
 import torch
 import yaml
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
 from inference.ds_acoustic import DiffSingerAcousticInfer
 from inference.ds_variance import DiffSingerVarianceInfer
 from modules.fastspeech.tts_modules import mel2ph_to_dur
