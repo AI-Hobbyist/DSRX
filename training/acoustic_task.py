@@ -84,9 +84,9 @@ class AcousticTask(BaseTask):
             self.train_aux_decoder = self.shallow_args['train_aux_decoder']
             self.train_diffusion = self.shallow_args['train_diffusion']
 
-        self.use_vocoder = hparams['infer'] or hparams['val_with_vocoder']
+        self.use_vocoder = hparams["infer"] or hparams["val_with_vocoder"]
         if self.use_vocoder:
-            self.vocoder: BaseVocoder = get_vocoder_cls(hparams)()
+            self.vocoder: BaseVocoder = self._build_vocoder()
         self.logged_gt_wav = set()
         self.required_variances = []
         if hparams['use_energy_embed']:
@@ -104,6 +104,9 @@ class AcousticTask(BaseTask):
             vocab_size=len(self.phoneme_dictionary),
             out_dims=hparams['audio_num_mel_bins']
         )
+
+    def _build_vocoder(self):
+        return get_vocoder_cls(hparams)()
 
     # noinspection PyAttributeOutsideInit
     def build_losses_and_metrics(self):

@@ -1,6 +1,6 @@
 # All-in-one 内置 Mini-DDSP 联合训练计划
 
-日期：2026-11-12。实施更新：2026-11-13，M1～M3 自动验收通过；M4～M6 尚未开始。
+日期：2026-11-12。实施更新：2026-11-13，M1～M4 自动验收通过；M5～M6 尚未开始。
 
 ## 1. 最终需求与范围
 
@@ -189,7 +189,7 @@ Reflow 训练期利用已有 `x_t,t,v_pred` 得到归一化干净谱估计 `x1_h
 
 ## 8. 实施阶段与验收
 
-阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1～M3 **PASS**；M4～M6 **NOT STARTED**。
+阶段必须顺序完成。每阶段自动验证通过后更新本计划状态、检查 git status/diff/diff --check，单独提交、推送并确认成功，再进入下一阶段。人工听音记录 MANUAL/PENDING，不作为 blocked 条件。当前 M1～M4 **PASS**；M5～M6 **NOT STARTED**。
 
 | 阶段 | 实施范围 | 必需验收 |
 |---|---|---|
@@ -232,4 +232,12 @@ Reflow 的可选干净谱出口使用 x_t+(1-t)*v_pred；DDPM 按其实际 alpha
 
 22项单元/回归通过，覆盖参数化公式、原声学训练、默认关闭、预处理及all-in-one CLI/唱法开关/空验证。既有AST隔离测试加入真实配置helper的AST，保持其轻量隔离目的。Black仅作用新文件和修改范围，diff --check通过。测试脚本的中途保存使用标准训练回调；没有修改既有BaseTask保存机制。num_valid_plots=0使原绘图绑定的曲线指标未更新并产生warning，不作为这些指标PASS；本轮验证的是实际loss。
 
-M4～M6 尚未实施：正式内置默认推理与NSF切换、波形ONNX、真实质量/性能评估未验收。听音MANUAL/PENDING。M3提交推送成功后开始M4。
+M3已提交推送5af8f90c6d8b3881405e5db352f6fcd70cbd0bc6，远端确认一致。
+
+M4 **PASS**（2026-11-13）：AllInOneVocoder 与 build_all_in_one_vocoder 统一正式CLI、原训练验证音频及唱法联动验证的默认后端；模型内 Mini-DDSP 默认不读取外部声码器。`scripts/infer.py all-in-one --vocoder nsf-hifigan` 显式使用同一声学mel/F0；`--save-mel` 不运行任何声码器，即使显式选择NSF。训练验证可由 all_in_one_vocoder_backend 显式选择；默认内置。NSF在加载前严格检查采样率/hop/mel bins/FFT/window/频率范围/自然对数定义，不对不兼容资产重采样充数。外部适配器逐条处理batch再stack，内部保持[B,N]；公共run_vocoder接受历史1D或规范2D，不flatten批维。
+
+真实验收：scripts/validate_mini_ddsp_inference.py 使用2033001224乐谱（从真实标注导出note_slur，不使用真实F0/时长作为预测输入），seed42、variance/acoustic均20步、三段含前置静音/间隔/重叠。正式CLI在配置外部路径不存在时输出internal.wav；同环境save-mel通过；显式NSF输出external.wav；原dslight100000步checkpoint关闭新开关输出legacy.wav。44.1k单声道425765采样，有限且非零，offset/gap/crossfade及最终长度通过。真实训练验证任务在外部路径不存在时构造内置后端，严格回载精简状态并生成有限波形。
+
+现有export_inference_ckpt.py已逐值保留全部state，不需要修改；37项model.vocoder状态及内置资源逐值一致，优化器被移除。该真实checkpoint训练文件178723106字节→推理文件67112193字节。产物/报告/真实CLI日志在artifacts/mini_ddsp_m4/（不提交）；checkpoint来自M3的12步，不能作为音质验收。四项新推理测试加旧CLI/空验证和M3接口回归共13项通过，覆盖相同mel/F0传入、B=2及契约逐项拒绝；Black修改范围与diff --check通过。
+
+M5～M6尚未实施：内置波形ONNX及真实质量/性能评估未验收。听音MANUAL/PENDING。M4提交推送成功后开始M5。

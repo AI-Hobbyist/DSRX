@@ -377,20 +377,58 @@ def variance(
         exit(-1)
 
 
-@main.command(name='all-in-one', help='Run variance and acoustic inference from one checkpoint')
-@click.argument('proj', type=click.Path(
-    exists=True, dir_okay=False, path_type=pathlib.Path, resolve_path=True
-))
-@click.option('--exp', required=True, callback=lambda ctx, param, value: find_exp(value))
-@click.option('--ckpt', type=click.IntRange(min=0), help='Checkpoint training step')
-@click.option('--out', type=click.Path(file_okay=False, path_type=pathlib.Path),
-              default='outputs/all_in_one', show_default=True)
-@click.option('--title', help='Output filename without extension')
-@click.option('--lang', default='zh', show_default=True)
-@click.option('--seed', type=int, default=1234, show_default=True)
-@click.option('--steps', type=click.IntRange(min=1), help='Sampling steps for both models')
-@click.option('--vocoder-fp32', is_flag=True, help='Disable selective FP16 in the NSF vocoder')
-def all_in_one(proj, exp, ckpt, out, title, lang, seed, steps, vocoder_fp32):
+@main.command(
+    name="all-in-one", help="Run variance and acoustic inference from one checkpoint"
+)
+@click.argument(
+    "proj",
+    type=click.Path(
+        exists=True, dir_okay=False, path_type=pathlib.Path, resolve_path=True
+    ),
+)
+@click.option(
+    "--exp", required=True, callback=lambda ctx, param, value: find_exp(value)
+)
+@click.option("--ckpt", type=click.IntRange(min=0), help="Checkpoint training step")
+@click.option(
+    "--out",
+    type=click.Path(file_okay=False, path_type=pathlib.Path),
+    default="outputs/all_in_one",
+    show_default=True,
+)
+@click.option("--title", help="Output filename without extension")
+@click.option("--lang", default="zh", show_default=True)
+@click.option("--seed", type=int, default=1234, show_default=True)
+@click.option(
+    "--steps", type=click.IntRange(min=1), help="Sampling steps for both models"
+)
+@click.option(
+    "--vocoder-fp32", is_flag=True, help="Disable selective FP16 in the NSF vocoder"
+)
+@click.option(
+    "--vocoder",
+    "vocoder_backend",
+    type=click.Choice(["mini-ddsp", "nsf-hifigan"]),
+    help="Waveform backend for Mini-DDSP models; defaults to internal Mini-DDSP",
+)
+@click.option(
+    "--save-mel",
+    is_flag=True,
+    help="Save the acoustic mel/F0 without running a vocoder",
+)
+def all_in_one(
+    proj,
+    exp,
+    ckpt,
+    out,
+    title,
+    lang,
+    seed,
+    steps,
+    vocoder_fp32,
+    vocoder_backend,
+    save_mel,
+):
     import torch
 
     from inference.ds_acoustic import DiffSingerAcousticInfer
@@ -456,11 +494,31 @@ def all_in_one(proj, exp, ckpt, out, title, lang, seed, steps, vocoder_fp32):
     )
     with predicted_path.open(encoding='utf-8') as source:
         predicted = json.load(source)
-    acoustic_infer = DiffSingerAcousticInfer(
-        device=device, model=model.acoustic, load_vocoder=True,
+    acoustic_options = dict(
+        device=device, model=model.acoustic, load_vocoder=not save_mel
     )
+    mini_enabled = (
+        hparams.get("all_in_one", {}).get("mini_ddsp", {}).get("enabled", False)
+    )
+    if mini_enabled:
+        acoustic_options["load_vocoder"] = False
+        if not save_mel:
+            from modules.vocoders.all_in_one import build_all_in_one_vocoder
+
+            acoustic_options["vocoder"] = build_all_in_one_vocoder(
+                model, vocoder_backend
+            )
+    elif vocoder_backend is not None:
+        raise click.ClickException(
+            "--vocoder selection requires an enabled Mini-DDSP model"
+        )
+    acoustic_infer = DiffSingerAcousticInfer(**acoustic_options)
+    inference_options = dict(out_dir=out, title=name, seed=seed)
+    if save_mel:
+        inference_options["save_mel"] = True
     acoustic_infer.run_inference(
-        predicted, out_dir=out, title=name, seed=seed,
+        predicted,
+        **inference_options,
     )
 
 

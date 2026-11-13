@@ -85,6 +85,15 @@ class AllInOneTask(AcousticTask):
             print(f"| Initialized new Mini-DDSP state: {key}")
         self.load_state_dict(initialized, strict=True)
 
+    def _build_vocoder(self):
+        if self.mini_ddsp_settings.get("enabled", False):
+            from modules.vocoders.all_in_one import build_all_in_one_vocoder
+
+            return build_all_in_one_vocoder(
+                self.model, hparams.get("all_in_one_vocoder_backend")
+            )
+        return super()._build_vocoder()
+
     def build_losses_and_metrics(self):
         AcousticTask.build_losses_and_metrics(self)
         VarianceTask.build_losses_and_metrics(self)

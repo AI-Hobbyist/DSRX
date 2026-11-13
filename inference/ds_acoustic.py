@@ -31,8 +31,15 @@ from utils.phoneme_utils import load_phoneme_dictionary
 
 class DiffSingerAcousticInfer(BaseSVSInfer):
     def __init__(
-            self, device=None, load_model=True, load_vocoder=True, ckpt_steps=None,
-            model=None, spk_map=None, lang_map=None
+        self,
+        device=None,
+        load_model=True,
+        load_vocoder=True,
+        ckpt_steps=None,
+        model=None,
+        spk_map=None,
+        lang_map=None,
+        vocoder=None,
     ):
         super().__init__(device=device)
         if load_model or model is not None:
@@ -69,7 +76,9 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                 self.inference_optimization = optimize_model_for_inference(
                     self.model, model_kind='acoustic', device=self.device
                 )
-        if load_vocoder:
+        if vocoder is not None:
+            self.vocoder = vocoder
+        elif load_vocoder:
             self.vocoder = self.build_vocoder()
 
     def build_model(self, ckpt_steps=None):
@@ -350,7 +359,11 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
     @torch.inference_mode()
     def run_vocoder(self, spec, **kwargs):
         y = self.vocoder.spec2wav_torch(spec, **kwargs)
-        return y[None]
+        if y.ndim == 1:
+            y = y[None]
+        if y.ndim != 2 or y.shape[0] != spec.shape[0]:
+            raise ValueError("Vocoder must return one waveform per batch item")
+        return y
 
     def run_inference(
             self, params,
