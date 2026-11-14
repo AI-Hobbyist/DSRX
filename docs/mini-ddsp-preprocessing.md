@@ -65,3 +65,17 @@ training_augmentation:
 实际验证：已有声学/唱法包、缺声码器包时，一次原入口 --resume 自动处理声码器，旧 .data/.meta SHA256不变；再次运行全部复用。真实CUDA声码器在提交第一条后注入KeyboardInterrupt，再从1/2恢复，7条真实音频各提取一次、第一条记录逐值不变、声学/唱法哈希不变。回归同时覆盖增强参数稳定、未提交尾部回滚、旧完整包复用与参数变化拒绝。验证来源匹配DiffSinger的精确名称优先规则，避免 wav1 的留出规则误包含 wav10。
 
 最终入口/续跑验收：45项回归PASS；原入口一次命令从零两进程完成全部三包，第二次全部复用，新包实际CUDA训练读取通过。日志 artifacts/preprocessing_resume/final-tests.log、fresh-all-stages.log、fresh-all-reused.log、fresh-training.log；真实中断报告 real-interruption-report.json，旧包哈希校验见 resume-missing-vocoder.log。
+
+## 其他后级的 all-in-one 模板
+
+以下五份模板均补齐共享音频、当前F0/hnsep设置、内置声码器选择、裁片/音量增强、checkpoint_interval/resume，以及一条原入口执行三阶段的命令：
+
+- configs/templates/all_in_one_wavenet_adamw.yaml
+- configs/templates/all_in_one_lynxnet2_muon.yaml
+- configs/templates/all_in_one_dit.yaml
+- configs/templates/all_in_one_dslight_50mb.yaml
+- configs/templates/all_in_one_dslight_quality_50mb.yaml
+
+保留 mini_ddsp.enabled:false 的原默认开关，用户启用后联合训练内置声码器。显式列出的 parselmouth/world 和音频值与原继承值相同，没有擅自替换提取算法；用户可在模板中改成实际使用的pe/hnsep。没有单独输出路径，没有更改独立声学/唱法模板。
+
+五份配置级联加载、无重复YAML键、启用后内置声码器/损失模块构造通过；移除本次新配置项后，解析出的原配置逐项完全相等，包含原网络、优化器、批量和默认开关。报告 artifacts/all_in_one_template_update/report.json。未分别实际训练这五种后级，长期训练/音质验收仍按用户要求 SKIPPED；实际CUDA训练验证使用用户指定云端配置。

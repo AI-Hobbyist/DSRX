@@ -1,3 +1,8 @@
+# Set all_in_one.mini_ddsp.enabled=true to jointly train the built-in vocoder.
+# One command runs acoustic -> variance -> vocoder as separate stages:
+# python scripts/binarize.py --config configs/templates/all_in_one_dit.yaml --resume
+# Optional vocoder-only preprocessing: python scripts/binarize_vocoder.py --config configs/templates/all_in_one_dit.yaml --resume
+# All packages use binary_data_dir/{acoustic,variance,vocoder}; no extra output path.
 base_config:
   - configs/original/acoustic.yaml
   - configs/original/variance.yaml
@@ -5,8 +10,26 @@ base_config:
 task_cls: training.all_in_one_task.AllInOneTask
 binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
 
-# Work sample rate of the shared VR separator weights.
+# Shared audio/F0/separator settings for all three preprocessing stages.
+# These explicit values preserve the inherited acoustic/variance defaults.
+audio_sample_rate: 44100
+audio_num_mel_bins: 128
+hop_size: 512
+fft_size: 2048
+win_size: 2048
+fmin: 40
+fmax: 16000
+mel_base: e
+pe: parselmouth
+pe_ckpt: ckpt/rmvpe/model.pt
+f0_min: 40
+f0_max: 2000
+hnsep: world
+hnsep_ckpt: ckpt/vr/model.pt
+# Work sample rate if hnsep is changed to vr.
 hnsep_sample_rate: 44100
+# Used only when mini_ddsp.enabled=true; nsf-hifigan remains an explicit option.
+all_in_one_vocoder_backend: mini-ddsp
 
 all_in_one:
   enabled: true
@@ -20,6 +43,11 @@ all_in_one:
     harmonic_group_size: 16
     harmonic_analysis_cycles: 4
     segment_frames: 128
+    training_augmentation:
+      random_crop: true
+      volume_enabled: true
+      log_volume_min: -1.0
+      log_volume_max: 1.0
     warmup_steps: 2000
     joint_ramp_steps: 2000
     loss:
@@ -76,6 +104,8 @@ aux_datasets:
   spk_ids: []  # empty for automatic IDs, or one ID per data entry
 
 binarization_args:
+  resume: false  # --resume reuses complete packages and resumes checkpoints.
+  checkpoint_interval: 16  # Set 1 to commit every source plus its augmentations.
   shuffle: true
   num_workers: 0
   prefer_ds: false
