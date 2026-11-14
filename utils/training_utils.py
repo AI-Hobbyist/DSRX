@@ -428,7 +428,6 @@ def get_strategy(
     precision=None,
 ):
     from lightning.fabric.utilities.device_parser import _determine_root_gpu_device
-    from lightning.pytorch.accelerators import AcceleratorRegistry
     from lightning.pytorch.accelerators.cuda import CUDAAccelerator
     from lightning.pytorch.accelerators.mps import MPSAccelerator
     from lightning.pytorch.strategies import Strategy, SingleDeviceStrategy, StrategyRegistry
@@ -436,30 +435,23 @@ def get_strategy(
     from lightning.pytorch.utilities.rank_zero import rank_zero_warn
     class _DsAcceleratorConnector(accelerator_connector._AcceleratorConnector):
         def __init__(self) -> None:
-            accelerator_connector._register_external_accelerators_and_strategies()
-            self._registered_strategies = StrategyRegistry.available_strategies()
-            self._accelerator_types = AcceleratorRegistry.available_accelerators()
-            self._parallel_devices = []
-            self._check_config_and_set_final_flags(
+            # Let Lightning initialize its version-specific connector state;
+            # retain our strategy constructor override for configured options.
+            super().__init__(
+                devices=devices,
+                num_nodes=num_nodes,
                 strategy=strategy["name"],
                 accelerator=accelerator,
                 precision=precision,
-                plugins=[],
-                sync_batchnorm=False,
             )
-            if self._accelerator_flag == "auto":
-                self._accelerator_flag = self._choose_auto_accelerator()
-            elif self._accelerator_flag == "gpu":
-                self._accelerator_flag = self._choose_gpu_accelerator_backend()
-            self._check_device_config_and_set_final_flags(devices=devices, num_nodes=num_nodes)
-            self._set_parallel_devices_and_init_accelerator()
-            if self._strategy_flag == "auto":
-                self._strategy_flag = self._choose_strategy()
-            self._check_strategy_and_fallback()
-            self._init_strategy()
             for k in ["colossalai", "bagua", "hpu", "hpu_parallel", "hpu_single", "ipu", "ipu_strategy"]:
                 if k in StrategyRegistry:
                     StrategyRegistry.remove(k)
+
+        def _lazy_init_strategy(self) -> None:
+            # This helper only constructs a strategy. Trainer owns the final
+            # accelerator/precision binding when it consumes that strategy.
+            pass
 
         def _init_strategy(self) -> None:
             assert isinstance(self._strategy_flag, (str, Strategy))

@@ -1,24 +1,25 @@
 # It is recommended to install PyTorch manually.
-# PyTorch >= 2.0 is recommended, but 1.12 and 1.13 is compatible.
+# Install matching CUDA torch/torchvision/torchaudio builds first.
+# Validated: PyTorch 2.11.0+cu130, Python 3.10 (Lightning requires torch >= 2.1).
 # See instructions at https://pytorch.org/get-started/locally/
 
 click
 einops>=0.7.0
 h5py
-librosa<0.10.0
-lightning~=2.3.0
+librosa~=0.11.0
+lightning~=2.6.6
 matplotlib
 MonkeyType==23.3.0
 numpy<2.0.0
 onnx~=1.16.0
 onnxsim~=0.4.36
 praat-parselmouth==0.4.3
-pyworld==0.3.4
+pyworld==0.3.5
 PyYAML
 resampy
 scipy>=1.10.0
+setuptools>=80.9,<82
 tensorboard
 tensorboardX
 torchmetrics
 tqdm
-setuptools<82.0.0
