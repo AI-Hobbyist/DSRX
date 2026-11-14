@@ -68,7 +68,7 @@ training_augmentation:
 
 ## 联合 loss 的监控口径
 
-`training/ddsp_joint_loss` 和 `training/ddsp_aux_joint_loss` 记录未加权的训练联合误差，只有实际参与联合监督的原始样本才贡献数值；warmup 或该 batch 没有原始配对样本时不写入零值。另记 `training/ddsp_joint_factor`（实际联合权重）和 `training/ddsp_joint_sample_count`（实际参与联合项的样本数）。反向传播仍使用原来的加权损失，不将这些监控指标额外加入优化目标。
+`training/ddsp_joint_loss` 和 `training/ddsp_aux_joint_loss` 与其他训练指标按同一 `log_interval` 刷新，记录该日志区间内未加权联合误差按有效样本数加权的均值。每个 batch 都参与收集，不再要求有效样本恰好出现在日志步上。`training/ddsp_joint_sample_count` 记录该区间实际参与联合项的样本总数，`training/ddsp_joint_factor` 仍记录当前实际联合权重。若整个区间都处于 warmup 或没有原始配对样本，则样本数为0，联合曲线缺测，不补零、不写NaN、不沿用旧值。反向传播仍使用原来的加权损失，不将这些监控指标额外加入优化目标。区间统计跨epoch收集，续训从本次启动后重新收集。
 
 `validation/ddsp_joint_loss` 和 `validation/ddsp_aux_joint_loss` 使用固定噪声下的完整声学推理 mel，经当前内置声码器合成音频，计算固定中心片段的多尺度频谱误差。不使用真实 mel 作为浅扩散起点，不乘 warmup/ramp 或损失权重，从第 0 步即可比较。声码器从整句开始合成以保持相位与试听一致；只在中心片段计分以维持固定评估范围。验证额外执行完整声学推理，会增加验证耗时。固定噪声按验证 batch 序号设置，相同验证分批和采样设置下可比较，RNG 隔离不影响后续训练。
 

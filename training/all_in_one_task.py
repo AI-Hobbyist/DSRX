@@ -60,6 +60,11 @@ class AllInOneTask(AcousticTask):
         self.variance_validation_speakers = []
         self.mini_ddsp_settings = mini_ddsp_config(hparams)
         super().__init__()
+        self._joint_log_sums = {}
+        self._joint_log_count = 0
+        self._joint_log_names = ["ddsp_joint_loss"]
+        if self.use_shallow_diffusion and self.train_aux_decoder:
+            self._joint_log_names.append("ddsp_aux_joint_loss")
 
     def _build_model(self):
         return DiffSingerAllInOne(
@@ -246,6 +251,31 @@ class AllInOneTask(AcousticTask):
             **joint_metrics,
             "batch_size": float(batch_size),
         }
+
+    def _training_log_metrics(self, log_outputs):
+        if not self.mini_ddsp_settings.get("enabled", False):
+            return log_outputs
+        count = log_outputs["ddsp_joint_sample_count"]
+        for name in self._joint_log_names:
+            if name in log_outputs:
+                weighted = log_outputs[name].detach() * count
+                self._joint_log_sums[name] = (
+                    self._joint_log_sums.get(name, 0) + weighted
+                )
+        self._joint_log_count += count
+        if self.global_step % hparams["log_interval"] != 0:
+            return log_outputs
+        # Include valid batches between log steps, even if this batch has none.
+        metrics = dict(log_outputs)
+        for name in self._joint_log_names:
+            if name in self._joint_log_sums:
+                metrics[name] = self._joint_log_sums[name] / self._joint_log_count
+            else:
+                metrics.pop(name, None)
+        metrics["ddsp_joint_sample_count"] = self._joint_log_count
+        self._joint_log_sums.clear()
+        self._joint_log_count = 0
+        return metrics
 
     @torch.no_grad()
     def _joint_validation(self, sample, batch_idx):

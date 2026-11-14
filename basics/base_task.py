@@ -271,6 +271,9 @@ class BaseTask(pl.LightningModule):
         total_loss = sum(losses.values())
         return total_loss, {**losses, 'batch_size': float(sample['size'])}
 
+    def _training_log_metrics(self, log_outputs):
+        return log_outputs
+
     def training_step(self, sample, batch_idx):
         total_loss, log_outputs = self._training_step(sample)
 
@@ -278,8 +281,9 @@ class BaseTask(pl.LightningModule):
         self.log_dict(log_outputs, prog_bar=True, logger=False, on_step=True, on_epoch=False)
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, logger=False, on_step=True, on_epoch=False)
         # logs to tensorboard
+        tensorboard_outputs = self._training_log_metrics(log_outputs)
         if self.global_step % hparams['log_interval'] == 0:
-            tb_log = {f'training/{k}': v for k, v in log_outputs.items()}
+            tb_log = {f'training/{k}': v for k, v in tensorboard_outputs.items()}
             tb_log['training/lr'] = self.lr_schedulers().get_last_lr()[0]
             self.logger.log_metrics(tb_log, step=self.global_step)
             
