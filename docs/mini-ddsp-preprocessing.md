@@ -66,6 +66,16 @@ training_augmentation:
 
 最终入口/续跑验收：45项回归PASS；原入口一次命令从零两进程完成全部三包，第二次全部复用，新包实际CUDA训练读取通过。日志 artifacts/preprocessing_resume/final-tests.log、fresh-all-stages.log、fresh-all-reused.log、fresh-training.log；真实中断报告 real-interruption-report.json，旧包哈希校验见 resume-missing-vocoder.log。
 
+## 联合 loss 的监控口径
+
+`training/ddsp_joint_loss` 和 `training/ddsp_aux_joint_loss` 记录未加权的训练联合误差，只有实际参与联合监督的原始样本才贡献数值；warmup 或该 batch 没有原始配对样本时不写入零值。另记 `training/ddsp_joint_factor`（实际联合权重）和 `training/ddsp_joint_sample_count`（实际参与联合项的样本数）。反向传播仍使用原来的加权损失，不将这些监控指标额外加入优化目标。
+
+`validation/ddsp_joint_loss` 和 `validation/ddsp_aux_joint_loss` 使用固定噪声下的完整声学推理 mel，经当前内置声码器合成音频，计算固定中心片段的多尺度频谱误差。不使用真实 mel 作为浅扩散起点，不乘 warmup/ramp 或损失权重，从第 0 步即可比较。声码器从整句开始合成以保持相位与试听一致；只在中心片段计分以维持固定评估范围。验证额外执行完整声学推理，会增加验证耗时。固定噪声按验证 batch 序号设置，相同验证分批和采样设置下可比较，RNG 隔离不影响后续训练。
+
+联合推理指标不加入 `validation/total_loss`；总量只汇总声学、唱法和真实 mel 的声码器监督项，避免动态权重改变验证总量。此指标仍使用数据集真实 F0/唱法条件，用于声学到声码器的质量评估，并非预测唱法的整链路指标。
+
+标签沿用原名但计算口径已变，按用户选择重新生成 TensorBoard 日志，避免拼接旧曲线；无需删除 checkpoint 或重新预处理。长期收敛和音质由实际训练试听验收。
+
 ## 其他后级的 all-in-one 模板
 
 以下五份模板均补齐共享音频、当前F0/hnsep设置、内置声码器选择、裁片/音量增强、checkpoint_interval/resume，以及一条原入口执行三阶段的命令：

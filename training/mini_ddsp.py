@@ -160,10 +160,46 @@ class MiniDDSPLoss(nn.Module):
             )
         return torch.stack(losses).mean()
 
-    def forward(self, vocoder, sample, output, acoustic, step, training=True):
+    @torch.no_grad()
+    def validation_joint(self, vocoder, sample, output):
+        """Score inference mel with full-utterance phase and a fixed center segment."""
+        paired = sample["vocoder"]
+        losses = {"ddsp_joint_loss": []}
+        if output.aux_out is not None:
+            losses["ddsp_aux_joint_loss"] = []
+        for index in range(sample["size"]):
+            if not paired["paired"][index]:
+                raise ValueError(
+                    "Joint validation requires original, unaugmented samples"
+                )
+            frames = int(paired["frame_lengths"][index])
+            segment = min(self.segment, frames)
+            start = ((frames - segment) // 2) * self.hop
+            stop = min(start + segment * self.hop, int(paired["sample_lengths"][index]))
+            target = paired["waveform"][index : index + 1, start:stop]
+            f0 = sample["f0"][index : index + 1, :frames]
+            predictions = {"ddsp_joint_loss": output.diff_out}
+            if output.aux_out is not None:
+                predictions["ddsp_aux_joint_loss"] = output.aux_out
+            for name, mel in predictions.items():
+                waveform = vocoder(mel[index : index + 1, :frames], f0)
+                losses[name].append(self.spectral(waveform[:, start:stop], target))
+        return {name: torch.stack(values).mean() for name, values in losses.items()}
+
+    def forward(
+        self,
+        vocoder,
+        sample,
+        output,
+        acoustic,
+        step,
+        training=True,
+        return_metrics=False,
+        include_joint=True,
+    ):
         paired = sample["vocoder"]
         weight = self.settings.get("loss", {})
-        factor = joint_factor(step, self.settings)
+        factor = joint_factor(step, self.settings) if include_joint else 0.0
         losses = {"ddsp_spectral_loss": [], "ddsp_amplitude_loss": []}
         if factor > 0:
             if output.clean_out is None:
@@ -253,8 +289,21 @@ class MiniDDSPLoss(nn.Module):
             for name, values in losses.items()
             if values
         }
-        if "ddsp_joint_loss" not in result:
+        if include_joint and "ddsp_joint_loss" not in result:
             result["ddsp_joint_loss"] = sample["mel"].new_zeros(())
             if output.aux_out is not None:
                 result["ddsp_aux_joint_loss"] = sample["mel"].new_zeros(())
-        return result
+        if not return_metrics:
+            return result
+        joint_values = losses.get("ddsp_joint_loss", [])
+        metrics = {
+            "ddsp_joint_factor": factor * weight.get("joint_weight", 1.0),
+            "ddsp_joint_sample_count": len(joint_values),
+        }
+        for name in ("ddsp_joint_loss", "ddsp_aux_joint_loss"):
+            values = losses.get(name, [])
+            if values:
+                metrics[name.replace("_loss", "_raw_loss")] = (
+                    torch.stack(values).mean().detach()
+                )
+        return result, metrics

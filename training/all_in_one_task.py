@@ -207,20 +207,21 @@ class AllInOneTask(AcousticTask):
             sampler.set_epoch(self.current_epoch)
 
     def _training_step(self, sample):
+        joint_metrics = {}
         if self.mini_ddsp_settings.get("enabled", False):
             acoustic_losses, output = AcousticTask.run_model(
                 self, sample["acoustic"], model=self.model.acoustic, return_output=True
             )
-            acoustic_losses.update(
-                self.ddsp_loss(
-                    self.model.vocoder,
-                    sample["acoustic"],
-                    output,
-                    self.model.acoustic,
-                    self.global_step,
-                    training=True,
-                )
+            ddsp_losses, joint_metrics = self.ddsp_loss(
+                self.model.vocoder,
+                sample["acoustic"],
+                output,
+                self.model.acoustic,
+                self.global_step,
+                training=True,
+                return_metrics=True,
             )
+            acoustic_losses.update(ddsp_losses)
         else:
             acoustic_losses = AcousticTask.run_model(
                 self, sample["acoustic"], model=self.model.acoustic
@@ -230,32 +231,62 @@ class AllInOneTask(AcousticTask):
         )
         losses = {**acoustic_losses, **variance_losses}
         batch_size = sample["acoustic"]["size"] + sample["variance"]["size"]
-        return sum(losses.values()), {**losses, 'batch_size': float(batch_size)}
+        # Weighted joint terms remain in the objective, never in the raw curves.
+        logs = {
+            name: value
+            for name, value in losses.items()
+            if name not in ("ddsp_joint_loss", "ddsp_aux_joint_loss")
+        }
+        joint_metrics = {
+            name.replace("_raw_loss", "_loss"): value
+            for name, value in joint_metrics.items()
+        }
+        return sum(losses.values()), {
+            **logs,
+            **joint_metrics,
+            "batch_size": float(batch_size),
+        }
+
+    @torch.no_grad()
+    def _joint_validation(self, sample, batch_idx):
+        # Keep validation noise fixed without changing subsequent training RNG.
+        devices = [self.device.index] if self.device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            torch.random.default_generator.manual_seed(1234 + batch_idx)
+            if devices:
+                with torch.cuda.device(self.device):
+                    torch.cuda.manual_seed(1234 + batch_idx)
+            output = AcousticTask.run_model(
+                self, {**sample, "mel": None}, model=self.model.acoustic, infer=True
+            )
+            return self.ddsp_loss.validation_joint(self.model.vocoder, sample, output)
 
     def validation_step(self, sample, batch_idx, dataloader_idx=0):
-        if sample['size'] == 0:
+        if sample["size"] == 0:
             return
+        joint_metrics = {}
         with torch.autocast(self.device.type, enabled=False):
             if dataloader_idx == 0:
                 losses, weight = self._run_validation_step(
                     AcousticTask._validation_step,
-                    self.acoustic_valid_dataset, sample, batch_idx,
-                    model=self.model.acoustic
+                    self.acoustic_valid_dataset,
+                    sample,
+                    batch_idx,
+                    model=self.model.acoustic,
                 )
                 if self.mini_ddsp_settings.get("enabled", False):
-                    _, output = AcousticTask.run_model(
-                        self, sample, model=self.model.acoustic, return_output=True
-                    )
                     losses.update(
                         self.ddsp_loss(
                             self.model.vocoder,
                             sample,
-                            output,
+                            None,
                             self.model.acoustic,
                             self.global_step,
                             training=False,
+                            include_joint=False,
                         )
                     )
+                    joint_metrics = self._joint_validation(sample, batch_idx)
                     if self.use_vocoder:
                         self._run_validation_step(
                             AllInOneTask._dataset_vocoder_validation,
@@ -271,7 +302,8 @@ class AllInOneTask(AcousticTask):
                     batch_idx,
                     model=self.model.variance,
                 )
-        losses = {'total_loss': sum(losses.values()), **losses}
+        # Inference quality metrics do not change the validation objective.
+        losses = {'total_loss': sum(losses.values()), **losses, **joint_metrics}
         for name, value in losses.items():
             self.valid_losses[name].update(value, weight=weight)
 
