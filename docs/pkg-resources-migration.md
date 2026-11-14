@@ -19,3 +19,5 @@ requirements-onnx.txt 保留旧 Torch 1.13 声学/唱法导出栈，不在此次
 后续最小排查：收集云端配置、硬件、依赖版本与完整日志；固定同一批数据及进程数，分别计时启动、音频读取、mel、F0、VR 分离与增强，区分冷启动和稳定吞吐，再定位回归。当前不将初始化、缓存或 Numba 编译认定为已证实根因。
 
 最终自动回归：35 项通过，覆盖导入门禁、CPU/CUDA Trainer 构造、策略参数、Mini-DDSP 预处理/训练/推理/ONNX 及 all-in-one 控制接口；pip check 与 git diff --check 通过。
+
+2026-11-14 后续性能处理：用户确认由 mini_ddsp 开关触发，已拆分声码器原音频预处理、恢复声学增强路径；证据及验证见 docs/mini-ddsp-preprocessing.md。最新 CUDA Torch/setuptools 升级按用户要求暂停。

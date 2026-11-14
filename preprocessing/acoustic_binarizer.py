@@ -256,61 +256,15 @@ class AcousticBinarizer(BaseBinarizer):
             processed_input['speed'] = 1.
 
         if self.paired_vocoder:
-            from preprocessing.mini_ddsp_cache import pairing_id, save_pair
+            from preprocessing.mini_ddsp_cache import pairing_id
 
-            pair_metadata = pair_metadata or {}
-            sample_id, augmentation_id = pairing_id(item_name, **pair_metadata)
-            # Fixed-width byte scalars match the existing indexed reader's
-            # NumPy scalar contract; HDF5 variable-length strings do not.
+            # Associate all feature augmentations with the original recording.
+            sample_id, augmentation_id = pairing_id(
+                f"{meta_data['spk_name']}:{item_name.split(':', 1)[-1]}"
+            )
             processed_input["sample_id"] = np.bytes_(sample_id)
             processed_input["augmentation_id"] = np.bytes_(augmentation_id)
-            processed_input["_mini_ddsp_split"] = self._mini_ddsp_split
-            processed_input["uv"] = uv.astype(bool)
-            if "key_shift" in processed_input:
-                processed_input["key_shift"] = pair_metadata.get("key_shift", 0.0)
-            if "speed" in processed_input:
-                processed_input["speed"] = pair_metadata.get("speed", 1.0)
-            save_pair(processed_input, waveform)
         return processed_input
-
-    def process_paired_augmentation(
-        self, item, key_shift=0.0, speed=1.0, replace_spk_id=None
-    ):
-        waveform, _ = librosa.load(
-            item["wav_fn"], sr=hparams["audio_sample_rate"], mono=True
-        )
-        if key_shift != 0.0:
-            waveform = librosa.effects.pitch_shift(
-                waveform, sr=hparams["audio_sample_rate"], n_steps=key_shift
-            )
-        if speed != 1.0:
-            waveform = librosa.effects.time_stretch(waveform, rate=speed)
-        metadata = {
-            "wav_fn": item["wav_fn"],
-            "spk_id": item["spk_id"] if replace_spk_id is None else replace_spk_id,
-            "artifact_level": item["artifact_level"],
-            "spk_name": item["spk_name"],
-            "lang_seq": item["languages"],
-            "ph_seq": item["tokens"],
-            "ph_dur": item["ph_dur"] / speed,
-            "ph_text": item["ph_text"],
-        }
-        paired = self.process_item(
-            item["name"],
-            metadata,
-            self.binarization_args,
-            waveform=waveform,
-            pair_metadata={
-                "key_shift": key_shift,
-                "speed": speed,
-                "spk_id": replace_spk_id,
-            },
-        )
-        if paired is None:
-            raise BinarizationError(
-                f"Paired augmentation has no voiced frames: {item['name']}"
-            )
-        return paired
 
     def arrange_data_augmentation(self, data_iterator):
         aug_map = {}
@@ -432,8 +386,4 @@ class AcousticBinarizer(BaseBinarizer):
 
             total_scale += scale
 
-        if self.paired_vocoder:
-            for tasks in aug_map.values():
-                for task in tasks:
-                    task["func"] = self.process_paired_augmentation
         return aug_map

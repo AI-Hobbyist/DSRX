@@ -1,19 +1,23 @@
-"""Run-scoped paired extraction records and complete VR harmonic cache."""
+"""Original-recording identities and run-scoped VR harmonic cache."""
 
 import hashlib
 import json
 import os
 import pathlib
-import pickle
 
 import numpy as np
 import yaml
 
-from utils.hparams import hparams, mini_ddsp_config
+from utils.hparams import hparams
 
 
 def enabled():
-    return mini_ddsp_config(hparams).get("enabled", False)
+    # Acoustic/variance preprocessing uses its normal separator path. The
+    # standalone vocoder command explicitly owns its waveform cache lifecycle.
+    return bool(
+        hparams.get("_mini_ddsp_cache_dir")
+        or os.environ.get("DSRX_MINI_DDSP_CACHE_DIR")
+    )
 
 
 def cache_directory():
@@ -31,17 +35,6 @@ def pairing_id(name, key_shift=0.0, speed=1.0, spk_id=None):
     )
     digest = hashlib.sha256((name + augmentation).encode()).hexdigest()
     return digest, augmentation
-
-
-def save_pair(item, waveform):
-    directory = cache_directory() / "pairs" / item["_mini_ddsp_split"]
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / (item["sample_id"].decode("ascii") + ".pkl")).open(
-        "wb"
-    ) as target:
-        pickle.dump(
-            {"item": item, "waveform": np.asarray(waveform, dtype=np.float32)}, target
-        )
 
 
 def harmonic_cache_path(waveform, sample_rate):

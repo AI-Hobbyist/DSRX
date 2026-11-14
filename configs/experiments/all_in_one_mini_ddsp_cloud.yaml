@@ -5,6 +5,7 @@
 # Single speaker opencpop, five validation sources, energy disabled.
 # Run from repository root after uploading data/opencpop_zh and RMVPE/VR weights:
 # python scripts/binarize.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml
+# python scripts/binarize_vocoder.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml
 # python scripts/train.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml --exp_name all_in_one_mini_ddsp_cloud
 # Re-run the same training command to resume. No preview checkpoint is loaded.
 # Batch limits are shared by acoustic/variance streams (each receives half).
@@ -31,6 +32,17 @@ binarization_args:
   workers_per_gpu: false
   prefer_ds: false
   allow_missing_phonemes: true
+# Shared preprocessing settings; this config also works with binarize_vocoder.py.
+audio_sample_rate: 44100
+audio_num_mel_bins: 128
+hop_size: 512
+fft_size: 2048
+win_size: 2048
+fmin: 40
+fmax: 16000
+mel_base: e
+f0_min: 40
+f0_max: 2000
 pe: rmvpe
 pe_ckpt: ckpt/rmvpe/model.pt
 hnsep: vr
@@ -84,6 +96,11 @@ all_in_one:
     harmonic_group_size: 16
     harmonic_analysis_cycles: 4
     segment_frames: 128
+    training_augmentation:
+      random_crop: true
+      volume_enabled: true
+      log_volume_min: -1.0
+      log_volume_max: 1.0
     warmup_steps: 2000
     joint_ramp_steps: 2000
     loss:

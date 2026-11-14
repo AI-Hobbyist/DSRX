@@ -1,0 +1,6 @@
+# All data/audio/F0/hnsep/worker/output settings are explicitly listed in:
+# configs/shared/opencpop_preprocessing.yaml (shared with acoustic training).
+# Override any of them below for a separate audio-only dataset.
+# python scripts/binarize_vocoder.py --config configs/vocoder/mini_ddsp_opencpop.yaml
+base_config:
+- configs/shared/opencpop_preprocessing.yaml

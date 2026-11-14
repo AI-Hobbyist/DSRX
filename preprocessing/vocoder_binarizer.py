@@ -1,17 +1,24 @@
-"""Independent indexed vocoder package from this run's paired source records."""
+"""Standalone audio-only Mini-DDSP binary preprocessing."""
 
 import json
+import os
+from pathlib import Path
 import pickle
-import shutil
+import tempfile
 
+import librosa
 import numpy as np
 import torch
 from torch.nn import functional as F
+from tqdm import tqdm
 
-from basics.base_binarizer import BaseBinarizer
-from preprocessing.mini_ddsp_cache import cache_directory
+from modules.pe import initialize_pe
+from preprocessing.mini_ddsp_cache import pairing_id
+from utils.binarizer_utils import get_mel_torch
 from utils.decomposed_waveform import DecomposedWaveform
 from utils.hparams import hparams, mini_ddsp_config
+from utils.indexed_datasets import IndexedDatasetBuilder
+from utils.multiprocess_utils import chunked_multiprocess_run
 
 VOCODER_ATTRIBUTES = [
     "sample_id",
@@ -26,6 +33,7 @@ VOCODER_ATTRIBUTES = [
     "length",
     "spk_id",
 ]
+pitch_extractor = None
 
 
 def harmonic_amplitudes(waveform, f0, uv, device):
@@ -79,70 +87,161 @@ def harmonic_amplitudes(waveform, f0, uv, device):
     return result
 
 
-class VocoderBinarizer(BaseBinarizer):
-    def __init__(self, datasets=None, binary_data_dir=None):
-        super().__init__(
-            datasets=datasets,
-            data_attrs=VOCODER_ATTRIBUTES,
-            binary_data_dir=binary_data_dir,
-        )
+class VocoderBinarizer:
+    """Read audio directly; no phoneme dictionaries, CSV or acoustic package."""
+
+    def __init__(self):
+        self.datasets = hparams["datasets"]
+        self.binary_data_dir = Path(hparams["binary_data_dir"]) / "vocoder"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def collect_sources(self):
+        sources = {"train": [], "valid": []}
+        identities = set()
+        for dataset in self.datasets:
+            directory = (
+                Path(dataset["audio_dir"])
+                if "audio_dir" in dataset
+                else Path(dataset["raw_data_dir"]) / "wavs"
+            )
+            prefixes = tuple(str(value) for value in dataset.get("test_prefixes", []))
+            for path in sorted(directory.rglob("*.wav")):
+                name = path.relative_to(directory).with_suffix("").as_posix()
+                identity, augmentation = pairing_id(f"{dataset['speaker']}:{name}")
+                if identity in identities:
+                    raise ValueError(
+                        f"Duplicate vocoder recording: {dataset['speaker']}:{name}"
+                    )
+                identities.add(identity)
+                split = "valid" if prefixes and name.startswith(prefixes) else "train"
+                sources[split].append(
+                    {
+                        "path": str(path),
+                        "sample_id": identity,
+                        "augmentation_id": augmentation,
+                        "spk_id": dataset.get("spk_id", 0),
+                    }
+                )
+        for split, items in sources.items():
+            if not items:
+                raise ValueError(f"No {split} audio found for vocoder preprocessing")
+        return sources
 
     def process(self):
+        sources = self.collect_sources()
         self.binary_data_dir.mkdir(parents=True, exist_ok=True)
-        for name, value in (("spk_map", self.spk_map), ("lang_map", self.lang_map)):
-            with (self.binary_data_dir / f"{name}.json").open(
-                "w", encoding="utf-8"
-            ) as target:
-                json.dump(value, target, ensure_ascii=False)
-        for lang, path in hparams["dictionaries"].items():
-            shutil.copy(path, self.binary_data_dir / f"dictionary-{lang}.txt")
-        with (self.binary_data_dir / "audio_contract.json").open(
-            "w", encoding="utf-8"
-        ) as target:
-            json.dump(
-                {
-                    "version": 1,
-                    "sample_rate": hparams["audio_sample_rate"],
-                    "hop_size": hparams["hop_size"],
-                    "mel_base": hparams["mel_base"],
-                    "hnsep_sample_rate": hparams.get("hnsep_sample_rate", 44100),
-                },
-                target,
-                indent=2,
-            )
-        for split in ("valid", "train"):
-            files = sorted((cache_directory() / "pairs" / split).glob("*.pkl"))
-            if not files:
-                raise RuntimeError(
-                    f"No paired {split} records; rerun all-in-one preprocessing"
-                )
-            self.items = {path.stem: {"record": path} for path in files}
-            names = list(self.items)
-            self._train_item_names = names if split == "train" else []
-            self._valid_item_names = names if split == "valid" else []
-            self.process_dataset(split)
+        contract_keys = (
+            "audio_sample_rate",
+            "audio_num_mel_bins",
+            "hop_size",
+            "fft_size",
+            "win_size",
+            "fmin",
+            "fmax",
+            "mel_base",
+            "pe",
+            "f0_min",
+            "f0_max",
+        )
+        contract = {key: hparams[key] for key in contract_keys}
+        contract["version"] = 2
+        (self.binary_data_dir / "audio_contract.json").write_text(
+            json.dumps(contract, indent=2), encoding="utf-8"
+        )
+        # Cache only intermediate harmonic signals, then remove them. The final
+        # waveform and labels live together in the indexed binary package.
+        with tempfile.TemporaryDirectory(
+            prefix=".vocoder-", dir=self.binary_data_dir
+        ) as cache:
+            previous = os.environ.get("DSRX_MINI_DDSP_CACHE_DIR")
+            os.environ["DSRX_MINI_DDSP_CACHE_DIR"] = cache
+            try:
+                for split, items in sources.items():
+                    self.process_dataset(split, items)
+            finally:
+                if previous is None:
+                    os.environ.pop("DSRX_MINI_DDSP_CACHE_DIR", None)
+                else:
+                    os.environ["DSRX_MINI_DDSP_CACHE_DIR"] = previous
+
+    def process_dataset(self, split, sources):
+        workers = int(hparams.get("binarization_args", {}).get("num_workers", 0))
+        args = [[source] for source in sources]
+        results = (
+            chunked_multiprocess_run(self.process_item, args, num_workers=workers)
+            if workers > 0
+            else (self.process_item(*arguments) for arguments in args)
+        )
+        builder = IndexedDatasetBuilder(self.binary_data_dir, split, VOCODER_ATTRIBUTES)
+        metadata = {"lengths": [], "names": [], "spk_ids": []}
+        try:
+            for index, item in enumerate(
+                tqdm(results, total=len(sources), desc=f"vocoder/{split}")
+            ):
+                source = sources[index]
+                builder.add_item(item)
+                metadata["lengths"].append(item["length"])
+                metadata["names"].append(source["path"])
+                metadata["spk_ids"].append(item["spk_id"])
+        finally:
+            builder.finalize()
+        with (self.binary_data_dir / f"{split}.meta").open("wb") as target:
+            pickle.dump(metadata, target)
 
     @torch.no_grad()
-    def process_item(self, item_name, meta_data, binarization_args):
-        with meta_data["record"].open("rb") as source:
-            record = pickle.load(source)
-        item, waveform = record["item"], record["waveform"]
+    def process_item(self, source):
+        waveform, _ = librosa.load(
+            source["path"], sr=hparams["audio_sample_rate"], mono=True
+        )
+        mel = get_mel_torch(
+            waveform,
+            hparams["audio_sample_rate"],
+            num_mel_bins=hparams["audio_num_mel_bins"],
+            hop_size=hparams["hop_size"],
+            win_size=hparams["win_size"],
+            fft_size=hparams["fft_size"],
+            fmin=hparams["fmin"],
+            fmax=hparams["fmax"],
+            device=self.device,
+        )
+        global pitch_extractor
+        if pitch_extractor is None:
+            pitch_extractor = initialize_pe(self.device)
+        f0, uv = pitch_extractor.get_pitch(
+            waveform,
+            samplerate=hparams["audio_sample_rate"],
+            length=len(mel),
+            hop_size=hparams["hop_size"],
+            f0_min=hparams["f0_min"],
+            f0_max=hparams["f0_max"],
+            interp_uv=True,
+        )
+        if uv.all():
+            raise ValueError(
+                f"Vocoder audio contains no voiced frames: {source['path']}"
+            )
         separator = DecomposedWaveform(
             waveform,
             samplerate=hparams["audio_sample_rate"],
-            f0=item["f0"] * ~item["uv"],
+            f0=f0 * ~uv,
             hop_size=hparams["hop_size"],
             fft_size=hparams["fft_size"],
             win_size=hparams["win_size"],
-            algorithm="vr",
+            algorithm=hparams["hnsep"],
             device=self.device,
         )
-        harmonic = separator.harmonic()
-        item["amplitude"] = harmonic_amplitudes(
-            harmonic, item["f0"], item["uv"], self.device
-        )
-        item["sample_rate"] = hparams["audio_sample_rate"]
-        count = item["length"] * hparams["hop_size"]
-        item["sample_length"] = min(len(waveform), count)
-        item["waveform"] = np.pad(waveform[:count], (0, max(0, count - len(waveform))))
-        return item
+        amplitude = harmonic_amplitudes(separator.harmonic(), f0, uv, self.device)
+        count = len(mel) * hparams["hop_size"]
+        return {
+            "sample_id": np.bytes_(source["sample_id"]),
+            "augmentation_id": np.bytes_(source["augmentation_id"]),
+            "spk_id": source["spk_id"],
+            "sample_rate": hparams["audio_sample_rate"],
+            "sample_length": min(len(waveform), count),
+            "length": len(mel),
+            "waveform": np.pad(waveform[:count], (0, max(0, count - len(waveform)))),
+            "mel": mel,
+            "f0": f0.astype(np.float32),
+            "uv": uv.astype(bool),
+            "amplitude": amplitude,
+        }

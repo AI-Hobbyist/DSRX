@@ -1,6 +1,9 @@
 """ID-paired acoustic supervision and bounded joint waveform training."""
 
+import json
+import math
 import pathlib
+import random
 
 import h5py
 import torch
@@ -17,11 +20,27 @@ class PairedAcousticDataset(AcousticDataset):
     def __init__(self, prefix, preload=False, data_dir=None):
         super().__init__(prefix, preload=preload, data_dir=data_dir)
         vocoder_dir = pathlib.Path(data_dir).parent / "vocoder"
-        message = (
-            "Mini-DDSP requires paired vocoder data; rerun all-in-one preprocessing"
-        )
+        message = "Mini-DDSP requires original-audio vocoder data; run scripts/binarize_vocoder.py"
         if not (vocoder_dir / f"{prefix}.data").exists():
             raise FileNotFoundError(message)
+        contract = json.loads(
+            (vocoder_dir / "audio_contract.json").read_text(encoding="utf-8")
+        )
+        for key in (
+            "audio_sample_rate",
+            "audio_num_mel_bins",
+            "hop_size",
+            "fft_size",
+            "win_size",
+            "fmin",
+            "fmax",
+            "mel_base",
+            "pe",
+            "f0_min",
+            "f0_max",
+        ):
+            if contract[key] != hparams[key]:
+                raise ValueError(f"Vocoder audio contract disagrees on {key}")
         self.vocoder_data = IndexedDataset(vocoder_dir, prefix)
         self.pair_indices = {}
         # Read only identifiers, rather than materializing all waveforms to
@@ -46,13 +65,13 @@ class PairedAcousticDataset(AcousticDataset):
             raise ValueError(
                 "Paired vocoder sample rate disagrees with training configuration"
             )
-        if not torch.equal(item["mel"], paired["mel"]) or not torch.equal(
-            item["f0"], paired["f0"]
-        ):
+        original = item["augmentation_id"] == b"[0.0,1.0,null]"
+        if original and item["mel"].shape != paired["mel"].shape:
             raise ValueError(
-                f"Acoustic/vocoder features disagree for {item['sample_id']!r}"
+                f"Original acoustic/vocoder frame lengths disagree for {item['sample_id']!r}"
             )
         item["vocoder"] = paired
+        item["vocoder_paired"] = original
         return item
 
     def collater(self, samples):
@@ -61,11 +80,14 @@ class PairedAcousticDataset(AcousticDataset):
             return batch
         paired = [sample["vocoder"] for sample in samples]
         batch["vocoder"] = {
+            "mel": utils.collate_nd([item["mel"] for item in paired], 0.0),
+            "f0": utils.collate_nd([item["f0"] for item in paired], 0.0),
             "waveform": utils.collate_nd([item["waveform"] for item in paired], 0.0),
             "amplitude": utils.collate_nd([item["amplitude"] for item in paired], 0.0),
             "uv": utils.collate_nd([item["uv"] for item in paired], True),
             "sample_lengths": torch.tensor([item["sample_length"] for item in paired]),
             "frame_lengths": torch.tensor([item["length"] for item in paired]),
+            "paired": torch.tensor([sample["vocoder_paired"] for sample in samples]),
         }
         return batch
 
@@ -78,10 +100,24 @@ def joint_factor(step, settings):
     return min(1.0, (step - warmup) / ramp) if ramp > 0 else 1.0
 
 
+def augment_vocoder_volume(mel, waveform, amplitude, settings, training):
+    """Reference Mini-DDSP log-gain augmentation with aligned amplitude labels."""
+    if not training or not settings.get("volume_enabled", True):
+        return mel, waveform, amplitude
+    lower = float(settings.get("log_volume_min", -1.0))
+    upper = float(settings.get("log_volume_max", 1.0))
+    peak = float(waveform.abs().max()) + 1e-5
+    log_gain = random.uniform(lower, min(upper, math.log(1.0 / peak)))
+    gain = math.exp(log_gain)
+    return mel + log_gain, waveform * gain, amplitude * gain
+
+
 class MiniDDSPLoss(nn.Module):
+
     def __init__(self, config):
         super().__init__()
         self.settings = mini_ddsp_config(config)
+        self.augmentation = self.settings.get("training_augmentation", {})
         self.hop = int(config["hop_size"])
         self.segment = int(self.settings.get("segment_frames", 128))
         self.context = (
@@ -142,7 +178,7 @@ class MiniDDSPLoss(nn.Module):
             segment = min(self.segment, frames)
             start = (
                 int(torch.randint(frames - segment + 1, ()).item())
-                if training
+                if training and self.augmentation.get("random_crop", True)
                 else (frames - segment) // 2
             )
             left, right = max(0, start - self.context), min(
@@ -158,21 +194,28 @@ class MiniDDSPLoss(nn.Module):
             # Match inference's interpolated acoustic F0. Zero UV amplitude
             # targets must teach the controller to suppress harmonics rather
             # than bypassing that supervision by forcing its F0 to zero.
-            f0 = sample["f0"][index : index + 1, left:right]
+            f0 = paired["f0"][index : index + 1, left:right]
             target = paired["waveform"][
                 index : index + 1, start * self.hop : start * self.hop + count
             ]
-            actual = vocoder(
-                sample["mel"][index : index + 1, left:right], f0, return_components=True
-            )
-            losses["ddsp_spectral_loss"].append(
-                self.spectral(actual["waveform"][:, center : center + count], target)
-            )
             first = start - left
-            amplitude = actual["amplitude"][:, first : first + segment]
             amplitude_target = paired["amplitude"][
                 index : index + 1, start : start + segment
             ]
+            mel, augmented_target, amplitude_target = augment_vocoder_volume(
+                paired["mel"][index : index + 1, left:right],
+                target,
+                amplitude_target,
+                self.augmentation,
+                training,
+            )
+            actual = vocoder(mel, f0, return_components=True)
+            losses["ddsp_spectral_loss"].append(
+                self.spectral(
+                    actual["waveform"][:, center : center + count], augmented_target
+                )
+            )
+            amplitude = actual["amplitude"][:, first : first + segment]
             losses["ddsp_amplitude_loss"].append(
                 (
                     torch.log(amplitude.clamp_min(1e-5))
@@ -181,8 +224,13 @@ class MiniDDSPLoss(nn.Module):
                 .abs()
                 .mean()
             )
-            if factor > 0:
-                predicted = vocoder(output.clean_out[index : index + 1, left:right], f0)
+            if factor > 0 and paired["paired"][index]:
+                # Independent F0 extraction can differ by floating-point roundoff.
+                # Acoustic joint supervision uses its own conditioning curve.
+                joint_f0 = sample["f0"][index : index + 1, left:right]
+                predicted = vocoder(
+                    output.clean_out[index : index + 1, left:right], joint_f0
+                )
                 losses["ddsp_joint_loss"].append(
                     self.spectral(predicted[:, center : center + count], target)
                 )
@@ -190,7 +238,7 @@ class MiniDDSPLoss(nn.Module):
                     aux_mel = acoustic.aux_decoder.denorm_spec(
                         output.aux_out[index : index + 1, left:right]
                     )
-                    auxiliary = vocoder(aux_mel, f0)
+                    auxiliary = vocoder(aux_mel, joint_f0)
                     losses["ddsp_aux_joint_loss"].append(
                         self.spectral(auxiliary[:, center : center + count], target)
                     )
@@ -203,8 +251,9 @@ class MiniDDSPLoss(nn.Module):
         result = {
             name: torch.stack(values).mean() * weights[name]
             for name, values in losses.items()
+            if values
         }
-        if factor == 0:
+        if "ddsp_joint_loss" not in result:
             result["ddsp_joint_loss"] = sample["mel"].new_zeros(())
             if output.aux_out is not None:
                 result["ddsp_aux_joint_loss"] = sample["mel"].new_zeros(())

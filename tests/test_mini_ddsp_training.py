@@ -24,6 +24,9 @@ class MiniDDSPTrainingTests(unittest.TestCase):
             "mel": torch.full((1, 5, 8), -6.0),
             "f0": torch.full((1, 5), 220.0),
             "vocoder": {
+                "mel": torch.full((1, 5, 8), -6.0),
+                "f0": torch.full((1, 5), 220.0),
+                "paired": torch.tensor([True]),
                 "frame_lengths": torch.tensor([5]),
                 "sample_lengths": torch.tensor([80]),
                 "waveform": torch.zeros(1, 80),

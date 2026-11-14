@@ -89,4 +89,11 @@ class SpectrogramStretchAugmentation(BaseAugmentation):
                 aug_item['spk_id'] = replace_spk_id
             aug_item['f0'] *= 2 ** (key_shift / 12)
 
+        if "augmentation_id" in item:
+            from preprocessing.mini_ddsp_cache import pairing_id
+
+            _, identity = pairing_id(
+                "", key_shift=key_shift, speed=speed, spk_id=replace_spk_id
+            )
+            aug_item["augmentation_id"] = np.bytes_(identity)
         return aug_item
