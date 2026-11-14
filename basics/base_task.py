@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.utils.data
 from torchmetrics import Metric, MeanMetric
 import lightning.pytorch as pl
+from lightning.pytorch.callbacks import ModelSummary
 from lightning.pytorch.utilities.rank_zero import rank_zero_debug, rank_zero_info, rank_zero_only
 
 from basics.base_module import CategorizedModule
@@ -503,6 +504,9 @@ class BaseTask(pl.LightningModule):
                 ),
                 # LearningRateMonitor(logging_interval='step'),
                 DsTQDMProgressBar(),
+                ModelSummary(
+                    max_depth=2 if hparams.get('all_in_one', {}).get('enabled', False) else 1
+                ),
             ],
             logger=logger,
             gradient_clip_val=hparams['clip_grad_norm'],
