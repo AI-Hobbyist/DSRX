@@ -1,6 +1,6 @@
 # Migrated from Downloads/dsrx_cfg.7z (aco.yaml and zh dictionary).
 # Only acoustic.yaml and variance.yaml are inherited; network dimensions,
-# acoustic backbone, AUX decoder, pitch and singing backbones match DSLight 50MB.
+# acoustic backbone, AUX decoder, pitch and singing backbones match quality-oriented DSLight 50MB.
 # Keep source Muon optimizer, batch limits, augmentation and learning-rate schedule.
 # Single speaker opencpop, five validation sources, energy disabled.
 # Run from repository root after uploading data/opencpop_zh and RMVPE/VR weights:
@@ -114,14 +114,15 @@ all_in_one_vocoder_backend: mini-ddsp
 shallow_diffusion_args:
   aux_decoder_arch: dslight
   aux_decoder_args:
-    num_channels: 128
-    num_layers: 4
+    num_channels: 192
+    num_layers: 6
     kernel_size: 7
     dilation_cycle:
     - 1
     - 3
     - 9
     dropout_rate: 0.0
+  aux_decoder_grad: 1.0
 pl_trainer_accelerator: gpu
 pl_trainer_devices: 1
 pl_trainer_num_nodes: 1
@@ -171,44 +172,44 @@ extra_phonemes:
 - vf
 merged_phoneme_groups: []
 lambda_aux_mel_loss: 0.2
-hidden_size: 192
+hidden_size: 224
 backbone_type: dslight
 backbone_args:
-  num_channels: 128
-  num_layers: 8
+  num_channels: 160
+  num_layers: 10
   kernel_size: 7
   dilation_cycle:
   - 1
   - 3
   - 9
   - 27
-  cond_channels: 192
+  cond_channels: 224
   time_embed_dim: 64
   dropout_rate: 0.0
 pitch_prediction_args:
   backbone_type: dslight
   backbone_args:
-    num_channels: 96
+    num_channels: 112
     num_layers: 6
     kernel_size: 7
     dilation_cycle:
     - 1
     - 3
     - 9
-    cond_channels: 192
+    cond_channels: 224
     time_embed_dim: 64
     dropout_rate: 0.0
 variances_prediction_args:
   backbone_type: dslight
   backbone_args:
-    num_channels: 96
+    num_channels: 112
     num_layers: 6
     kernel_size: 7
     dilation_cycle:
     - 1
     - 3
     - 9
-    cond_channels: 192
+    cond_channels: 224
     time_embed_dim: 64
     dropout_rate: 0.0
 dur_prediction_args:
