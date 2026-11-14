@@ -41,7 +41,7 @@ class JointLoggingIntervalTests(unittest.TestCase):
         result = self.collect(task, {"ddsp_joint_sample_count": 0, "mel_loss": 0.1})
         self.assertEqual(result["ddsp_joint_loss"], 3.5)
         self.assertEqual(result["ddsp_aux_joint_loss"], 4.5)
-        self.assertEqual(result["ddsp_joint_sample_count"], 4)
+        self.assertNotIn("ddsp_joint_sample_count", result)
         self.assertFalse(result["ddsp_joint_loss"].requires_grad)
         self.assertEqual(result["mel_loss"], 0.1)
         self.assertEqual(task._joint_log_count, 0)
@@ -53,7 +53,7 @@ class JointLoggingIntervalTests(unittest.TestCase):
         result = self.collect(task, {"ddsp_joint_sample_count": 0})
         self.assertNotIn("ddsp_joint_loss", result)
         self.assertNotIn("ddsp_aux_joint_loss", result)
-        self.assertEqual(result["ddsp_joint_sample_count"], 0)
+        self.assertNotIn("ddsp_joint_sample_count", result)
 
     def test_base_task_collects_between_log_steps_and_writes_at_original_interval(self):
         task = SimpleNamespace(
@@ -116,6 +116,7 @@ class JointLoggingIntervalTests(unittest.TestCase):
             task.logger.experiment.flush()
             task.logger.experiment.close()
             events = EventAccumulator(task.logger.log_dir).Reload()
+            self.assertNotIn("training/ddsp_joint_sample_count", events.Tags()["scalars"])
             for tag, value in [("ddsp_joint_loss", 2.0), ("ddsp_aux_joint_loss", 3.0)]:
                 points = events.Scalars("training/" + tag)
                 self.assertEqual(

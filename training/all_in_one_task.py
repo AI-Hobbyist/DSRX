@@ -272,7 +272,7 @@ class AllInOneTask(AcousticTask):
                 metrics[name] = self._joint_log_sums[name] / self._joint_log_count
             else:
                 metrics.pop(name, None)
-        metrics["ddsp_joint_sample_count"] = self._joint_log_count
+        metrics.pop("ddsp_joint_sample_count", None)
         self._joint_log_sums.clear()
         self._joint_log_count = 0
         return metrics
