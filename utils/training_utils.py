@@ -8,7 +8,7 @@ import lightning.pytorch as pl
 import numpy as np
 import torch
 from lightning.fabric.loggers.tensorboard import _TENSORBOARD_AVAILABLE
-from lightning.pytorch.callbacks import ModelCheckpoint, TQDMProgressBar
+from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, TQDMProgressBar
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_only
 from torch.optim.lr_scheduler import LambdaLR
@@ -300,6 +300,22 @@ def get_latest_checkpoint_path(work_dir):
                 last_ckpt_name = str(ckpt)
 
     return last_ckpt_name if last_ckpt_name is not None else None
+
+
+class DsModelSummary(ModelSummary):
+    @staticmethod
+    def summarize(summary_data, *args, **kwargs):
+        if hparams.get("all_in_one", {}).get("enabled", False):
+            names = dict(summary_data)["Name"]
+            model_rows = [
+                index for index, name in enumerate(names)
+                if name == "model" or name.startswith("model.")
+            ]
+            summary_data = [
+                (label, [values[index] for index in model_rows])
+                for label, values in summary_data
+            ]
+        ModelSummary.summarize(summary_data, *args, **kwargs)
 
 
 class DsTQDMProgressBar(TQDMProgressBar):
