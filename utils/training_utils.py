@@ -323,6 +323,22 @@ class DsTQDMProgressBar(TQDMProgressBar):
         super().__init__(refresh_rate, process_position)
         self.show_steps = show_steps
 
+    def on_train_start(self, trainer, pl_module):
+        super().on_train_start(trainer, pl_module)
+        # Lightning skips the epoch-start hook when resuming mid-epoch.
+        super().on_train_epoch_start(trainer, pl_module)
+        self._first_train_batch = True
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        if self._first_train_batch:
+            self._first_train_batch = False
+            bar = self.train_progress_bar
+            # Count restored batches in progress, but not in this run's speed.
+            bar.initial = batch_idx
+            bar.n = batch_idx
+            bar.last_print_n = batch_idx
+            bar.refresh()
+
     def get_metrics(self, trainer, model):
         items = super().get_metrics(trainer, model)
         if hparams.get("all_in_one", {}).get("enabled", False):
