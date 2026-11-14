@@ -197,7 +197,6 @@ class DsBatchSampler(Sampler):
         self.__form_batches()
 
 
-
 # ==========PL related==========
 
 class DsModelCheckpoint(ModelCheckpoint):
@@ -310,10 +309,28 @@ class DsTQDMProgressBar(TQDMProgressBar):
 
     def get_metrics(self, trainer, model):
         items = super().get_metrics(trainer, model)
-        if 'batch_size' in items:
-            items['batch_size'] = int(items['batch_size'])
+        if hparams.get("all_in_one", {}).get("enabled", False):
+            # Only shorten terminal output; BaseTask still logs every loss.
+            names = {
+                "mel_loss": "mel",
+                "ddsp_spectral_loss": "voc",
+                "ddsp_joint_loss": "joint",
+                "val_loss": "val",
+                "lr": "lr",
+            }
+            items = {
+                label: (
+                    f"{items[name]:.3g}"
+                    if isinstance(items[name], float)
+                    else items[name]
+                )
+                for name, label in names.items()
+                if name in items
+            }
+        if "batch_size" in items:
+            items["batch_size"] = int(items["batch_size"])
         if self.show_steps:
-            items['steps'] = str(trainer.global_step)
+            items["steps"] = str(trainer.global_step)
         for k, v in items.items():
             if isinstance(v, float):
                 if np.isnan(v):
