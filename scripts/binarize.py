@@ -1,3 +1,4 @@
+import argparse
 import importlib
 import os
 import sys
@@ -19,16 +20,20 @@ set_hparams()
 
 
 def binarize():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--resume', action='store_true')
+    args, _ = parser.parse_known_args()
+    if args.resume:
+        hparams.setdefault("binarization_args", {})["resume"] = True
     binarizer_name = hparams["binarizer_cls"]
     pkg = ".".join(binarizer_name.split(".")[:-1])
     cls_name = binarizer_name.split(".")[-1]
     binarizer_cls = getattr(importlib.import_module(pkg), cls_name)
     enabled_modules = {
-        name for name in AUX_MODULES
-        if hparams.get(f'predict_{name}', False)
+        name for name in AUX_MODULES if hparams.get(f"predict_{name}", False)
     }
     aux_config = parse_aux_dataset_config(
-        hparams.get('aux_datasets', {}), enabled_modules=enabled_modules
+        hparams.get("aux_datasets", {}), enabled_modules=enabled_modules
     )
     if aux_config is None:
         aux_datasets = None

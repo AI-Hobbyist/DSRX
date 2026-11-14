@@ -32,6 +32,8 @@ hnsep_sample_rate: 44100
 
 # Standalone binary package, also used by all-in-one joint training.
 binarization_args:
+  resume: false  # CLI --resume overrides this; keep completed/partial packages.
+  checkpoint_interval: 16  # Source groups per checkpoint; use 1 for every source.
   num_workers: 2
 all_in_one:
   enabled: true

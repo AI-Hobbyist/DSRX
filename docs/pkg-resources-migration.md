@@ -39,7 +39,8 @@ tests/run_without_pkg_resources.py 可选择 binarize、binarize_vocoder、train
 
 ## 阶段进度
 
-1. cu132 / 最新 setuptools：实现和自动验证已通过，待本阶段提交推送检查点。
-2. 其他后级的 all-in-one 模板：尚未实施。下一阶段仅补充内置声码器联合训练相关设置及独立预处理说明，不修改各后级网络、优化器或批量配置。
+1. cu132 / 最新 setuptools：已通过并提交推送 2370f9c3bdc45457f3ed4d7c33fa5f5bff7efb7e，远端确认一致。
+2. 用户追加优先修复：原 all-in-one 入口自动进入声码器阶段及断点续跑。45项回归、一次原入口三阶段从零出包、旧包复用、真实CUDA中断恢复、训练读取均通过，待本阶段提交推送检查点。
+3. 其他后级的 all-in-one 模板：尚未实施。只补充内置声码器联合训练相关设置及预处理说明，不修改各后级网络、优化器或批量配置。
 
 声学预处理性能拆分已在上一项完成，见 docs/mini-ddsp-preprocessing.md；云端4090吞吐仍为 MANUAL/PENDING，不影响本次依赖实际跑通结论。

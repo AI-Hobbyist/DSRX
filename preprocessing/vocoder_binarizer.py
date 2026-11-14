@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import pickle
 import tempfile
 
 import librosa
@@ -15,6 +14,7 @@ from tqdm import tqdm
 from modules.pe import initialize_pe
 from preprocessing.mini_ddsp_cache import pairing_id
 from utils.binarizer_utils import get_mel_torch
+from utils.binarization_checkpoint import BinarizationCheckpoint, atomic_pickle
 from utils.decomposed_waveform import DecomposedWaveform
 from utils.hparams import hparams, mini_ddsp_config
 from utils.indexed_datasets import IndexedDatasetBuilder
@@ -105,7 +105,19 @@ class VocoderBinarizer:
                 else Path(dataset["raw_data_dir"]) / "wavs"
             )
             prefixes = tuple(str(value) for value in dataset.get("test_prefixes", []))
-            for path in sorted(directory.rglob("*.wav")):
+            paths = sorted(directory.rglob("*.wav"))
+            names = {
+                path.relative_to(directory).with_suffix("").as_posix() for path in paths
+            }
+            # Match DiffSinger: an exact name takes precedence over a prefix.
+            valid_names = set()
+            for prefix in prefixes:
+                valid_names.update(
+                    {prefix}
+                    if prefix in names
+                    else {name for name in names if name.startswith(prefix)}
+                )
+            for path in paths:
                 name = path.relative_to(directory).with_suffix("").as_posix()
                 identity, augmentation = pairing_id(f"{dataset['speaker']}:{name}")
                 if identity in identities:
@@ -113,7 +125,7 @@ class VocoderBinarizer:
                         f"Duplicate vocoder recording: {dataset['speaker']}:{name}"
                     )
                 identities.add(identity)
-                split = "valid" if prefixes and name.startswith(prefixes) else "train"
+                split = "valid" if name in valid_names else "train"
                 sources[split].append(
                     {
                         "path": str(path),
@@ -145,9 +157,6 @@ class VocoderBinarizer:
         )
         contract = {key: hparams[key] for key in contract_keys}
         contract["version"] = 2
-        (self.binary_data_dir / "audio_contract.json").write_text(
-            json.dumps(contract, indent=2), encoding="utf-8"
-        )
         # Cache only intermediate harmonic signals, then remove them. The final
         # waveform and labels live together in the indexed binary package.
         with tempfile.TemporaryDirectory(
@@ -163,30 +172,65 @@ class VocoderBinarizer:
                     os.environ.pop("DSRX_MINI_DDSP_CACHE_DIR", None)
                 else:
                     os.environ["DSRX_MINI_DDSP_CACHE_DIR"] = previous
+        temporary = self.binary_data_dir / "audio_contract.json.tmp"
+        temporary.write_text(json.dumps(contract, indent=2), encoding="utf-8")
+        os.replace(temporary, self.binary_data_dir / "audio_contract.json")
 
     def process_dataset(self, split, sources):
+        checkpoint = BinarizationCheckpoint(
+            self.binary_data_dir,
+            split,
+            sources,
+            VOCODER_ATTRIBUTES,
+            {"waveform", "mel", "f0", "uv", "amplitude", "sample_id"},
+            {source["sample_id"].encode("ascii") for source in sources},
+        )
+        if checkpoint.prepare():
+            return
+        start_index = checkpoint.state["next_index"]
         workers = int(hparams.get("binarization_args", {}).get("num_workers", 0))
-        args = [[source] for source in sources]
+        args = [[source] for source in sources[start_index:]]
         results = (
             chunked_multiprocess_run(self.process_item, args, num_workers=workers)
-            if workers > 0
+            if workers > 0 and args
             else (self.process_item(*arguments) for arguments in args)
         )
-        builder = IndexedDatasetBuilder(self.binary_data_dir, split, VOCODER_ATTRIBUTES)
-        metadata = {"lengths": [], "names": [], "spk_ids": []}
+        builder = IndexedDatasetBuilder(
+            self.binary_data_dir,
+            split,
+            VOCODER_ATTRIBUTES,
+            resume=checkpoint.restoring,
+        )
+        if checkpoint.restoring:
+            builder.truncate(checkpoint.state["count"])
+            metadata = checkpoint.state["payload"]
+        else:
+            metadata = {"lengths": [], "names": [], "spk_ids": []}
+            checkpoint.commit(builder, 0, metadata)
+        processed = start_index
         try:
             for index, item in enumerate(
-                tqdm(results, total=len(sources), desc=f"vocoder/{split}")
+                tqdm(
+                    results,
+                    total=len(sources),
+                    initial=start_index,
+                    desc=f"vocoder/{split}",
+                ),
+                start=start_index,
             ):
                 source = sources[index]
                 builder.add_item(item)
                 metadata["lengths"].append(item["length"])
                 metadata["names"].append(source["path"])
                 metadata["spk_ids"].append(item["spk_id"])
+                processed = index + 1
+                if processed % checkpoint.interval == 0:
+                    checkpoint.commit(builder, processed, metadata)
+            checkpoint.commit(builder, processed, metadata)
         finally:
             builder.finalize()
-        with (self.binary_data_dir / f"{split}.meta").open("wb") as target:
-            pickle.dump(metadata, target)
+        atomic_pickle(self.binary_data_dir / f"{split}.meta", metadata)
+        checkpoint.finish()
 
     @torch.no_grad()
     def process_item(self, source):

@@ -1,18 +1,17 @@
 # 内置 Mini-DDSP 的独立预处理
 
-声码器仍内置于 all-in-one 模型，网络、完整 checkpoint 和单模型导出结构不变。这里只拆开数据准备入口，不新增独立声码器训练器或模型导出。
+声码器仍内置于 all-in-one 模型，网络、完整 checkpoint 和单模型导出结构不变。声码器数据处理作为独立第三阶段，由原 all-in-one 入口自动调度；不新增独立声码器训练器或模型导出。
 
 ## 使用
 
-同一份配置可分别执行两条预处理命令，再训练完整模型：
+开启 all_in_one.mini_ddsp.enabled 后，一条原预处理命令依次执行声学 → 唱法 → 声码器，再训练完整模型：
 
 ```bash
-python scripts/binarize.py --config data/all_in_one_mini_ddsp_cloud.yaml
-python scripts/binarize_vocoder.py --config data/all_in_one_mini_ddsp_cloud.yaml
+python scripts/binarize.py --config data/all_in_one_mini_ddsp_cloud.yaml --resume
 python scripts/train.py --config data/all_in_one_mini_ddsp_cloud.yaml --exp_name all_in_one_mini_ddsp_cloud
 ```
 
-独立准备音频数据时，也可使用 configs/vocoder/mini_ddsp_opencpop.yaml；其公共设置集中在 configs/shared/opencpop_preprocessing.yaml，不继承 acoustic/variance 网络配置。读取 datasets 中的 raw_data_dir/wavs；也可在该数据集条目中显式设置 audio_dir。声码器不读取 CSV/DS 或字典。speaker 和相对音频名用于关联原样本，test_prefixes 决定留出来源。
+只需重做声码器数据时，可运行 scripts/binarize_vocoder.py --config <配置> --resume。独立准备音频数据时，也可使用 configs/vocoder/mini_ddsp_opencpop.yaml；其公共设置集中在 configs/shared/opencpop_preprocessing.yaml，不继承 acoustic/variance 网络配置。读取 datasets 中的 raw_data_dir/wavs；也可在该数据集条目中显式设置 audio_dir。声码器不读取 CSV/DS 或字典。speaker 和相对音频名用于关联原样本，test_prefixes 决定留出来源。
 
 统一使用 binary_data_dir。声学/唱法分别写 acoustic/variance，声码器写 vocoder 下的 train.data/train.meta、valid.data/valid.meta，使用 DiffSinger 同款 HDF5 indexed 格式。波形、mel、F0、UV、谐波幅度集中存入包内；谐波中间缓存只存在于本次命令的临时目录，结束后清理。没有 vocoder_binary_data_dir 设置。
 
@@ -52,3 +51,17 @@ training_augmentation:
 日志和报告：artifacts/preprocessing_performance/，包括 before.log、profile-summary.log、after.json、final-tests.log、reference-acoustic.log、reference-vocoder.log、reference-training.log、joint-training.log、verification.json。完整测试 checkpoint 在 ckpt/independent_vocoder_smoke/model_ckpt_steps_2.ckpt；它包含 acoustic/variance/vocoder，仅用于跑通，不是音质权重。长期收敛/音质训练 SKIPPED（用户决定），听音 MANUAL/PENDING。
 
 最新版 CUDA Torch/setuptools 升级已按用户要求暂停；本次没有安装新 Torch，不把未验证的最新版升级混入本提交。
+
+## 断点继续（2026-11-14 修正）
+
+此前将独立阶段误实现为必须手动运行第二条命令，导致开启 Mini-DDSP 后原入口仍在唱法结束时退出。现由 AllInOneBinarizer 按顺序调用三阶段；独立只是处理职责和包的分离，不是拆模型或要求换训练入口。阶段日志明确打印 acoustic、variance、vocoder，关闭开关时明确打印跳过原因。
+
+原命令加 --resume 即可。也可设置 binarization_args.resume:true；checkpoint_interval 默认16个源样本，设1可逐源保存。新运行无论是否启用复用都会写进度，之后可以 --resume 接续。源样本的全部增强作为一个提交组；中断后最多重做上一个检查点之后的源组，已提交记录不重提取、不重复追加。
+
+进度使用同一二进制包的 .progress.pkl，完成后只保留 .complete.json。HDF5先flush再原子保存游标/元数据，恢复时回滚未提交尾部、恢复增强抽样随机状态；输入元数据、文件大小/修改时间及预处理参数的指纹变化会拒绝混用。恢复控制和worker数量不进入指纹，可以调整进程数继续。
+
+此前版本没有指纹的完整 .data/.meta 可在 --resume 下做结构、数量和已有源ID检查后复用，并明确打印 legacy package。它无法追溯旧参数，使用此模式表示按相同数据/参数复用旧包；若旧参数或数据实际已变，应关闭resume重做。旧版本未完成且没有进度文件的部分无法凭空恢复。新检查点支持正常异常/Ctrl+C退出后的续跑，不承诺修复强杀/断电导致的HDF5文件损坏。
+
+实际验证：已有声学/唱法包、缺声码器包时，一次原入口 --resume 自动处理声码器，旧 .data/.meta SHA256不变；再次运行全部复用。真实CUDA声码器在提交第一条后注入KeyboardInterrupt，再从1/2恢复，7条真实音频各提取一次、第一条记录逐值不变、声学/唱法哈希不变。回归同时覆盖增强参数稳定、未提交尾部回滚、旧完整包复用与参数变化拒绝。验证来源匹配DiffSinger的精确名称优先规则，避免 wav1 的留出规则误包含 wav10。
+
+最终入口/续跑验收：45项回归PASS；原入口一次命令从零两进程完成全部三包，第二次全部复用，新包实际CUDA训练读取通过。日志 artifacts/preprocessing_resume/final-tests.log、fresh-all-stages.log、fresh-all-reused.log、fresh-training.log；真实中断报告 real-interruption-report.json，旧包哈希校验见 resume-missing-vocoder.log。

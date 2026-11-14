@@ -24,23 +24,33 @@ class IndependentVocoderTests(unittest.TestCase):
         hparams.clear()
         hparams.update(self.previous)
 
-    def test_enabled_acoustic_pipeline_never_runs_vocoder(self):
+    def test_enabled_pipeline_runs_vocoder_after_feature_stages(self):
         hparams.update(
             {
                 "binary_data_dir": "unused",
                 "all_in_one": {"enabled": True, "mini_ddsp": {"enabled": True}},
             }
         )
+        stages = []
         with patch(
             "preprocessing.all_in_one_binarizer.AcousticBinarizer"
         ) as acoustic, patch(
             "preprocessing.all_in_one_binarizer.VarianceBinarizer"
-        ) as variance, patch.object(
-            VocoderBinarizer, "process", side_effect=AssertionError("vocoder ran")
-        ):
+        ) as variance, patch(
+            "preprocessing.vocoder_binarizer.VocoderBinarizer"
+        ) as vocoder:
+            acoustic.return_value.process.side_effect = lambda: stages.append(
+                "acoustic"
+            )
+            variance.return_value.process.side_effect = lambda: stages.append(
+                "variance"
+            )
+            vocoder.return_value.process.side_effect = lambda: stages.append("vocoder")
             AllInOneBinarizer().process()
         acoustic.return_value.process.assert_called_once()
         variance.return_value.process.assert_called_once()
+        vocoder.return_value.process.assert_called_once()
+        self.assertEqual(stages, ["acoustic", "variance", "vocoder"])
 
     def test_standalone_configuration_and_audio_only_binary_package(self):
         settings = set_hparams(
@@ -86,7 +96,35 @@ class IndependentVocoderTests(unittest.TestCase):
                     "train.meta",
                     "valid.data",
                     "valid.meta",
+                    "train.complete.json",
+                    "valid.complete.json",
                 },
+            )
+
+    def test_audio_validation_matches_exact_diff_singer_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for name in ("wav1", "wav10", "other"):
+                (directory / f"{name}.wav").touch()
+            hparams.update(
+                {
+                    "binary_data_dir": temporary,
+                    "datasets": [
+                        {
+                            "audio_dir": temporary,
+                            "speaker": "s",
+                            "test_prefixes": ["wav1"],
+                        }
+                    ],
+                }
+            )
+            sources = VocoderBinarizer().collect_sources()
+            self.assertEqual(
+                [Path(item["path"]).stem for item in sources["valid"]], ["wav1"]
+            )
+            self.assertEqual(
+                {Path(item["path"]).stem for item in sources["train"]},
+                {"wav10", "other"},
             )
 
     def test_augmented_acoustic_length_does_not_drive_vocoder_supervision(self):

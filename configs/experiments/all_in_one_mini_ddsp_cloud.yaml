@@ -4,8 +4,8 @@
 # Keep source Muon optimizer, batch limits, augmentation and learning-rate schedule.
 # Single speaker opencpop, five validation sources, energy disabled.
 # Run from repository root after uploading data/opencpop_zh and RMVPE/VR weights:
-# python scripts/binarize.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml
-# python scripts/binarize_vocoder.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml
+# python scripts/binarize.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml --resume
+# Optional vocoder-only rebuild: python scripts/binarize_vocoder.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml
 # python scripts/train.py --config configs/experiments/all_in_one_mini_ddsp_cloud.yaml --exp_name all_in_one_mini_ddsp_cloud
 # Re-run the same training command to resume. No preview checkpoint is loaded.
 # Batch limits are shared by acoustic/variance streams (each receives half).
@@ -27,6 +27,8 @@ datasets:
   - '2082003039'
 binary_data_dir: data/pre/binary/all_in_one_mini_ddsp_cloud
 binarization_args:
+  resume: false  # CLI --resume overrides this; keep completed/partial packages.
+  checkpoint_interval: 16  # Source groups per checkpoint; use 1 for every source.
   shuffle: true
   num_workers: 2
   workers_per_gpu: false

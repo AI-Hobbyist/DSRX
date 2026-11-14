@@ -298,31 +298,86 @@ class BaseBinarizer:
                 )
 
     def process_dataset(self, prefix, num_workers=0, apply_augmentation=False):
+        from utils.binarization_checkpoint import BinarizationCheckpoint, atomic_pickle
+
         args = []
-        builder = IndexedDatasetBuilder(self.binary_data_dir, prefix=prefix, allowed_attr=self.data_attrs)
         total_sec = {k: 0.0 for k in self.spk_map}
         total_raw_sec = {k: 0.0 for k in self.spk_map}
-        extra_info = {'names': {}, 'ph_texts': {}, 'spk_ids': {}, 'spk_names': {}, 'lengths': {}}
+        extra_info = {
+            "names": {},
+            "ph_texts": {},
+            "spk_ids": {},
+            "spk_names": {},
+            "lengths": {},
+        }
         max_no = -1
 
         for item_name, meta_data in self.meta_data_iterator(prefix):
             args.append([item_name, meta_data, self.binarization_args])
 
-        aug_map = self.arrange_data_augmentation(self.meta_data_iterator(prefix)) if apply_augmentation else {}
+        expected_ids = None
+        if "sample_id" in self.data_attrs:
+            from preprocessing.mini_ddsp_cache import pairing_id
+
+            expected_ids = {
+                pairing_id(f"{metadata['spk_name']}:{name.split(':', 1)[-1]}")[
+                    0
+                ].encode("ascii")
+                for name, metadata, _ in args
+            }
+        required = (
+            {"tokens", "mel", "f0"}
+            if "mel" in self.data_attrs
+            else {"tokens", "ph_dur"}
+        )
+        checkpoint = BinarizationCheckpoint(
+            self.binary_data_dir,
+            prefix,
+            [{"name": name, **metadata} for name, metadata, _ in args],
+            self.data_attrs,
+            required,
+            expected_ids,
+        )
+        if checkpoint.prepare():
+            return
+        start_index = checkpoint.state["next_index"]
+        random.setstate(checkpoint.state["rng_state"])
+        aug_map = (
+            self.arrange_data_augmentation(self.meta_data_iterator(prefix))
+            if apply_augmentation and start_index < len(args)
+            else {}
+        )
+        builder = IndexedDatasetBuilder(
+            self.binary_data_dir,
+            prefix=prefix,
+            allowed_attr=self.data_attrs,
+            resume=checkpoint.restoring,
+        )
+        if checkpoint.restoring:
+            builder.truncate(checkpoint.state["count"])
+            total_sec, total_raw_sec, extra_info, max_no = checkpoint.state["payload"]
+        else:
+            checkpoint.commit(
+                builder, 0, (total_sec, total_raw_sec, extra_info, max_no)
+            )
 
         device_ids = None
         num_workers = int(num_workers)
         if (
-                num_workers > 0 and torch.cuda.is_available()
-                and (torch.cuda.device_count() > 1)
+            num_workers > 0
+            and torch.cuda.is_available()
+            and (torch.cuda.device_count() > 1)
         ):
-            per_gpu_workers = self.binarization_args.get('num_workers_per_gpu')
-            if per_gpu_workers is None and self.binarization_args.get('workers_per_gpu', False):
+            per_gpu_workers = self.binarization_args.get("num_workers_per_gpu")
+            if per_gpu_workers is None and self.binarization_args.get(
+                "workers_per_gpu", False
+            ):
                 per_gpu_workers = num_workers
             if per_gpu_workers:
                 per_gpu_workers = int(per_gpu_workers)
                 device_ids = [
-                    gpu for gpu in range(torch.cuda.device_count())
+                    gpu
+                    for gpu in range(torch.cuda.device_count())
                     for _ in range(per_gpu_workers)
                 ]
                 num_workers = len(device_ids)
@@ -338,16 +393,16 @@ class BaseBinarizer:
                     if k not in extra_info:
                         extra_info[k] = {}
                     extra_info[k][item_no] = v.shape[0]
-            extra_info['names'][item_no] = _item['name'].split(':', 1)[-1]
-            extra_info['ph_texts'][item_no] = _item['ph_text']
-            extra_info['spk_ids'][item_no] = _item['spk_id']
-            extra_info['spk_names'][item_no] = _item['spk_name']
-            extra_info['lengths'][item_no] = _item['length']
-            total_raw_sec[_item['spk_name']] += _item['seconds']
-            total_sec[_item['spk_name']] += _item['seconds']
+            extra_info["names"][item_no] = _item["name"].split(":", 1)[-1]
+            extra_info["ph_texts"][item_no] = _item["ph_text"]
+            extra_info["spk_ids"][item_no] = _item["spk_id"]
+            extra_info["spk_names"][item_no] = _item["spk_name"]
+            extra_info["lengths"][item_no] = _item["length"]
+            total_raw_sec[_item["spk_name"]] += _item["seconds"]
+            total_sec[_item["spk_name"]] += _item["seconds"]
 
-            for task in aug_map.get(_item['name'], []):
-                aug_item = task['func'](_item, **task['kwargs'])
+            for task in aug_map.get(_item["name"], []):
+                aug_item = task["func"](_item, **task["kwargs"])
                 aug_item_no = builder.add_item(aug_item)
                 max_no = max(max_no, aug_item_no)
                 for k, v in aug_item.items():
@@ -355,48 +410,71 @@ class BaseBinarizer:
                         if k not in extra_info:
                             extra_info[k] = {}
                         extra_info[k][aug_item_no] = v.shape[0]
-                extra_info['names'][aug_item_no] = aug_item['name'].split(':', 1)[-1]
-                extra_info['ph_texts'][aug_item_no] = aug_item['ph_text']
-                extra_info['spk_ids'][aug_item_no] = aug_item['spk_id']
-                extra_info['spk_names'][aug_item_no] = aug_item['spk_name']
-                extra_info['lengths'][aug_item_no] = aug_item['length']
-                total_sec[aug_item['spk_name']] += aug_item['seconds']
+                extra_info["names"][aug_item_no] = aug_item["name"].split(":", 1)[-1]
+                extra_info["ph_texts"][aug_item_no] = aug_item["ph_text"]
+                extra_info["spk_ids"][aug_item_no] = aug_item["spk_id"]
+                extra_info["spk_names"][aug_item_no] = aug_item["spk_name"]
+                extra_info["lengths"][aug_item_no] = aug_item["length"]
+                total_sec[aug_item["spk_name"]] += aug_item["seconds"]
+
+        processed = start_index
+
+        def consume(item):
+            nonlocal processed
+            postprocess(item)
+            processed += 1
+            if processed % checkpoint.interval == 0:
+                checkpoint.commit(
+                    builder, processed, (total_sec, total_raw_sec, extra_info, max_no)
+                )
 
         try:
-            if num_workers > 0:
+            if num_workers > 0 and start_index < len(args):
                 # code for parallel processing
                 for item in tqdm(
-                        chunked_multiprocess_run(
-                            self.process_item, args, num_workers=num_workers, device_ids=device_ids
-                        ),
-                        total=len(list(self.meta_data_iterator(prefix)))
+                    chunked_multiprocess_run(
+                        self.process_item,
+                        args[start_index:],
+                        num_workers=num_workers,
+                        device_ids=device_ids,
+                    ),
+                    total=len(args),
+                    initial=start_index,
                 ):
-                    postprocess(item)
+                    consume(item)
             else:
                 # code for single cpu processing
-                for a in tqdm(args):
+                for a in tqdm(args[start_index:], total=len(args), initial=start_index):
                     item = self.process_item(*a)
-                    postprocess(item)
+                    consume(item)
+            checkpoint.commit(
+                builder, processed, (total_sec, total_raw_sec, extra_info, max_no)
+            )
             for k in extra_info:
-                assert set(extra_info[k]) == set(range(max_no + 1)), f'Item numbering is not consecutive.'
-                extra_info[k] = list(map(lambda x: x[1], sorted(extra_info[k].items(), key=lambda x: x[0])))
-        except KeyboardInterrupt:
+                assert set(extra_info[k]) == set(
+                    range(max_no + 1)
+                ), f"Item numbering is not consecutive."
+                extra_info[k] = list(
+                    map(
+                        lambda x: x[1],
+                        sorted(extra_info[k].items(), key=lambda x: x[0]),
+                    )
+                )
+        finally:
             builder.finalize()
-            raise
-
-        builder.finalize()
         if prefix == "train":
             extra_info.pop("names")
-            extra_info.pop('ph_texts')
+            extra_info.pop("ph_texts")
             extra_info.pop("spk_names")
-        with open(self.binary_data_dir / f"{prefix}.meta", "wb") as f:
-            # noinspection PyTypeChecker
-            pickle.dump(extra_info, f)
+        atomic_pickle(self.binary_data_dir / f"{prefix}.meta", extra_info)
+        checkpoint.finish()
         if apply_augmentation:
-            print(f"| {prefix} total duration (before augmentation): {sum(total_raw_sec.values()):.2f}s")
+            print(
+                f"| {prefix} total duration (before augmentation): {sum(total_raw_sec.values()):.2f}s"
+            )
             print(
                 f"| {prefix} respective duration (before augmentation): "
-                + ', '.join(f'{k}={v:.2f}s' for k, v in total_raw_sec.items())
+                + ", ".join(f"{k}={v:.2f}s" for k, v in total_raw_sec.items())
             )
             print(
                 f"| {prefix} total duration (after augmentation): "
@@ -404,11 +482,14 @@ class BaseBinarizer:
             )
             print(
                 f"| {prefix} respective duration (after augmentation): "
-                + ', '.join(f'{k}={v:.2f}s' for k, v in total_sec.items())
+                + ", ".join(f"{k}={v:.2f}s" for k, v in total_sec.items())
             )
         else:
             print(f"| {prefix} total duration: {sum(total_raw_sec.values()):.2f}s")
-            print(f"| {prefix} respective duration: " + ', '.join(f'{k}={v:.2f}s' for k, v in total_raw_sec.items()))
+            print(
+                f"| {prefix} respective duration: "
+                + ", ".join(f"{k}={v:.2f}s" for k, v in total_raw_sec.items())
+            )
 
     def arrange_data_augmentation(self, data_iterator):
         """
