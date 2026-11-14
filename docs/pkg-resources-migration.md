@@ -1,23 +1,45 @@
-# pkg_resources 依赖迁移与验证
+# pkg_resources 迁移及 cu132 / 最新 setuptools 升级
 
-训练/预处理环境为 Python 3.10；librosa 0.9.2 → 0.11.0、Lightning 2.3.3 → 2.6.6、pyworld 0.3.4 → 0.3.5，setuptools 81.0.0。保留匹配的 CUDA PyTorch 2.11.0+cu130、torchvision 0.26.0+cu130、torchaudio 2.11.0+cu130；没有替换为 CPU 版本。setuptools 保持 <82 以满足当前 Torch 依赖。
+## 当前环境（2026-11-14）
 
-新版 Lightning 删除了项目复制的私有初始化方法；get_strategy 改为调用父类初始化，同时保留策略参数及由 Trainer 完成最终绑定的行为。没有更改训练算法或批大小。
+实际已安装并验证：Python 3.10、Torch 2.14.1+cu132、torchvision 0.29.2+cu132、torchaudio 2.11.1+cu132、setuptools 84.2.1；librosa 0.11.0、Lightning 2.6.6、pyworld 0.3.5。CUDA runtime 13.2，RTX 5060 Laptop GPU。没有替换为 CPU 版本，没有保留 setuptools<82 上限。
 
-已实际通过：pip check；禁止导入 pkg_resources 的新进程导入检查；2 进程、2 条训练来源和 5 条验证来源的三个预处理包；CUDA/bf16 两步 Muon 训练及两路验证；旧 Lightning checkpoint 恢复后继续到第 3 步。日志位于 artifacts/pkg_resources_migration/。这些只验证流程跑通；收敛与音质训练 SKIPPED（用户决定），人工听音 MANUAL/PENDING。
+此前 Torch 2.11 的 setuptools<82 元数据约束只适用于旧版本。本次实际查询并安装指定 cu132 源的三个包，依赖解析、实际 CUDA 运算和 CUDA 音频重采样均通过；没有仅凭 torchaudio 与 Torch 版本号不同判为不兼容。
 
-测试入口 tests/run_without_pkg_resources.py 通过环境变量 DSRX_MIGRATION_ENTRYPOINT 选择 binarize/train，接受原 CLI 参数，并在 Windows 子进程内继续拦截旧接口导入；仅用于验证，不是生产兼容层。
+## 更新命令
 
-requirements-onnx.txt 保留旧 Torch 1.13 声学/唱法导出栈，不在此次升级范围。现代训练、预处理和 all-in-one 导出使用 requirements.txt。setuptools 自带及可选旧工具中仍可能保留 pkg_resources 文本；不宣称整个环境已删除该模块。
+进入项目、激活训练环境后执行；此次升级不再使用此前保留旧 Torch 的 constraints 文件：
 
-## 待排查：云端声学预处理速度
+```bash
+python -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu132
+python -m pip install --upgrade setuptools -r requirements.txt
+python -m pip check
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
 
-2026-11-14 用户报告：云端声学预处理由此前 it/s 降为 s/it。用户明确要求后续再修，本轮仅记录，不实施性能修改。
+使用 requirements.txt；requirements-onnx.txt 保留独立旧 Torch 1.13 acoustic/variance 导出栈，不用于本次现代训练/预处理/all-in-one 环境。现代环境的回归包含 ONNX 执行检查，但不声称旧导出环境已升级。
 
-云端根因尚未定位；目前没有云端逐阶段计时、硬件/进程数和同数据对照证据。本机小样本日志不能作为云端根因结论：旧版两进程的 2 条训练来源约 34 秒，新版约 42 秒；新版验证首条约 22.9 秒，其余 4 条合计不足 1 秒，存在首条启动开销。旧版单进程约 5 秒，不能与新版两进程直接比较。
+## 实际验证
 
-后续最小排查：收集云端配置、硬件、依赖版本与完整日志；固定同一批数据及进程数，分别计时启动、音频读取、mel、F0、VR 分离与增强，区分冷启动和稳定吞吐，再定位回归。当前不将初始化、缓存或 Numba 编译认定为已证实根因。
+40 项自动回归 PASS（含主流程导入、策略构造、CUDA Trainer、Mini-DDSP 预处理/训练/推理/ONNX 和 all-in-one 控制接口）。pip check 和 requirements.txt 安装解析通过。tests/test_dependency_imports.py 现在同时覆盖 setuptools、torchvision、torchaudio 与独立声码器预处理导入。
 
-最终自动回归：35 项通过，覆盖导入门禁、CPU/CUDA Trainer 构造、策略参数、Mini-DDSP 预处理/训练/推理/ONNX 及 all-in-one 控制接口；pip check 与 git diff --check 通过。
+tests/run_without_pkg_resources.py 可选择 binarize、binarize_vocoder、train；真实 CLI 的主进程及 Windows spawn 子进程均安装导入拦截器，遇到 pkg_resources 会立即失败，不是生产兼容层。最新环境下三个入口实际完成，均未触发该模块。
 
-2026-11-14 后续性能处理：用户确认由 mini_ddsp 开关触发，已拆分声码器原音频预处理、恢复声学增强路径；证据及验证见 docs/mini-ddsp-preprocessing.md。最新 CUDA Torch/setuptools 升级按用户要求暂停。
+以用户 data/all_in_one_mini_ddsp_cloud.yaml 为基准，在隔离目录进行 2 条训练来源+5 条 val 的实际试跑；仅覆盖本机字典/DS/数据/输出路径、预处理 worker2、DataLoader0、步数及 Mini-DDSP 启用，不改网络、Muon、BS64/50000 或正式 warmup/ramp：
+
+- 声学/唱法两进程、独立声码器两进程预处理 PASS。train acoustic8/variance2/vocoder2，valid各5；源 WAV/CSV SHA256 不变，ID 关联及train/val隔离、有限值、波形长度通过。
+- 完整内置声码器 all-in-one CUDA bf16/Muon 两步训练、两路各5条val、TensorBoard图/试听、step2完整checkpoint保存 PASS。checkpoint含 acoustic/variance/vocoder，模型参数均有限。
+- 另一步仅测试覆盖 warmup/ramp=0，主后级/AUX 联合损失 7.25694/7.24069，正常反传更新并退出 PASS。
+
+原来的 DS 字典不匹配段仍按已有行为警告跳过，未计为通过；两路5条数据集 val 实际执行。收敛和音质训练 SKIPPED（用户决定），人工听音 MANUAL/PENDING。实际训练只验证跑通，不证明质量。没有为了通过而屏蔽错误、删除功能或换回旧依赖。
+
+产物 artifacts/cu132_upgrade/：environment.json、probe.log、regressions.log、acoustic-variance-preprocessing.log、vocoder-preprocessing.log、training.log、joint-training.log、verification.json、pip-check.log、requirements-plan.log、after-freeze.txt。完整测试checkpoint：ckpt/cu132_all_in_one_smoke/model_ckpt_steps_2.ckpt。
+
+无需新增生产兼容代码：此前移除旧依赖直接 pkg_resources 导入的版本升级，以及 Lightning 策略构造修复，在新 Torch 上通过实跑。本次提交更新依赖清单、验证入口和说明。
+
+## 阶段进度
+
+1. cu132 / 最新 setuptools：实现和自动验证已通过，待本阶段提交推送检查点。
+2. 其他后级的 all-in-one 模板：尚未实施。下一阶段仅补充内置声码器联合训练相关设置及独立预处理说明，不修改各后级网络、优化器或批量配置。
+
+声学预处理性能拆分已在上一项完成，见 docs/mini-ddsp-preprocessing.md；云端4090吞吐仍为 MANUAL/PENDING，不影响本次依赖实际跑通结论。

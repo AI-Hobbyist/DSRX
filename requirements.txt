@@ -1,6 +1,6 @@
 # It is recommended to install PyTorch manually.
 # Install matching CUDA torch/torchvision/torchaudio builds first.
-# Validated: PyTorch 2.11.0+cu130, Python 3.10 (Lightning requires torch >= 2.1).
+# Validated: PyTorch 2.14.1+cu132, Python 3.10, setuptools 84.2.1.
 # See instructions at https://pytorch.org/get-started/locally/
 
 click
@@ -18,7 +18,7 @@ pyworld==0.3.5
 PyYAML
 resampy
 scipy>=1.10.0
-setuptools>=80.9,<82
+setuptools>=84.2.1
 tensorboard
 tensorboardX
 torchmetrics

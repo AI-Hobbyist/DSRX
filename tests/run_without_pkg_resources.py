@@ -1,7 +1,8 @@
 """Run a real CLI with a legacy-import gate, including spawned workers.
 
-Set DSRX_MIGRATION_ENTRYPOINT to binarize or train, then pass the normal CLI
-arguments to this file. This is validation instrumentation, not a runtime shim.
+Set DSRX_MIGRATION_ENTRYPOINT to binarize, binarize_vocoder or train, then pass
+the normal CLI arguments to this file. This is validation instrumentation,
+not a runtime shim.
 """
 
 import importlib.abc
@@ -22,14 +23,16 @@ class RejectPkgResources(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, RejectPkgResources())
 entrypoint = os.environ["DSRX_MIGRATION_ENTRYPOINT"]
-if entrypoint not in ("binarize", "train"):
-    raise ValueError("DSRX_MIGRATION_ENTRYPOINT must be binarize or train")
+if entrypoint not in ("binarize", "binarize_vocoder", "train"):
+    raise ValueError(
+        "DSRX_MIGRATION_ENTRYPOINT must be binarize, binarize_vocoder or train"
+    )
 repository = Path(__file__).resolve().parents[1]
 namespace = runpy.run_path(
     str(repository / "scripts" / f"{entrypoint}.py"), run_name="__dependency_probe__"
 )
 if __name__ == "__main__":
-    namespace["binarize" if entrypoint == "binarize" else "run_task"]()
+    namespace["run_task" if entrypoint == "train" else "binarize"]()
     if "pkg_resources" in sys.modules:
         raise AssertionError("pkg_resources was loaded during validation")
     print("PASS: entrypoint completed without pkg_resources", flush=True)

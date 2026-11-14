@@ -18,10 +18,14 @@ class DependencyImportTests(unittest.TestCase):
                     if fullname == 'pkg_resources' or fullname.startswith('pkg_resources.'):
                         raise AssertionError(fullname)
             sys.meta_path.insert(0, RejectLegacy())
+            import setuptools
+            import torchvision
+            import torchaudio
             import librosa
             import pyworld
             import lightning.pytorch
             import preprocessing.all_in_one_binarizer
+            import preprocessing.vocoder_binarizer
             import training.all_in_one_task
             import utils.training_utils
             assert 'pkg_resources' not in sys.modules
