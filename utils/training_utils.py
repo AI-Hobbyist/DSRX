@@ -8,7 +8,7 @@ import lightning.pytorch as pl
 import numpy as np
 import torch
 from lightning.fabric.loggers.tensorboard import _TENSORBOARD_AVAILABLE
-from lightning.pytorch.callbacks import ModelCheckpoint, TQDMProgressBar
+from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary, TQDMProgressBar
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_only
 from torch.optim.lr_scheduler import LambdaLR
@@ -197,7 +197,6 @@ class DsBatchSampler(Sampler):
         self.__form_batches()
 
 
-
 # ==========PL related==========
 
 class DsModelCheckpoint(ModelCheckpoint):
@@ -303,17 +302,67 @@ def get_latest_checkpoint_path(work_dir):
     return last_ckpt_name if last_ckpt_name is not None else None
 
 
+class DsModelSummary(ModelSummary):
+    @staticmethod
+    def summarize(summary_data, *args, **kwargs):
+        if hparams.get("all_in_one", {}).get("enabled", False):
+            names = dict(summary_data)["Name"]
+            model_rows = [
+                index for index, name in enumerate(names)
+                if name == "model" or name.startswith("model.")
+            ]
+            summary_data = [
+                (label, [values[index] for index in model_rows])
+                for label, values in summary_data
+            ]
+        ModelSummary.summarize(summary_data, *args, **kwargs)
+
+
 class DsTQDMProgressBar(TQDMProgressBar):
     def __init__(self, refresh_rate: int = 1, process_position: int = 0, show_steps: bool = True):
         super().__init__(refresh_rate, process_position)
         self.show_steps = show_steps
 
+    def on_train_start(self, trainer, pl_module):
+        super().on_train_start(trainer, pl_module)
+        # Lightning skips the epoch-start hook when resuming mid-epoch.
+        super().on_train_epoch_start(trainer, pl_module)
+        self._first_train_batch = True
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        if self._first_train_batch:
+            self._first_train_batch = False
+            bar = self.train_progress_bar
+            # Count restored batches in progress, but not in this run's speed.
+            bar.initial = batch_idx
+            bar.n = batch_idx
+            bar.last_print_n = batch_idx
+            bar.refresh()
+
     def get_metrics(self, trainer, model):
         items = super().get_metrics(trainer, model)
-        if 'batch_size' in items:
-            items['batch_size'] = int(items['batch_size'])
+        if hparams.get("all_in_one", {}).get("enabled", False):
+            # Only shorten terminal output; BaseTask still logs every loss.
+            names = {
+                "mel_loss": "mel",
+                "ddsp_spectral_loss": "voc",
+                "ddsp_joint_loss": "joint",
+                "val_loss": "val",
+                "lr": "lr",
+            }
+            items = {
+                label: (
+                    f"{items[name]:.3g}"
+                    if isinstance(items[name], float)
+                    else items[name]
+                )
+                for name, label in names.items()
+                if name in items
+            }
+        if "batch_size" in items:
+            items["batch_size"] = int(items["batch_size"])
         if self.show_steps:
-            items['steps'] = str(trainer.global_step)
+            items["steps"] = str(trainer.global_step)
         for k, v in items.items():
             if isinstance(v, float):
                 if np.isnan(v):
@@ -428,7 +477,6 @@ def get_strategy(
     precision=None,
 ):
     from lightning.fabric.utilities.device_parser import _determine_root_gpu_device
-    from lightning.pytorch.accelerators import AcceleratorRegistry
     from lightning.pytorch.accelerators.cuda import CUDAAccelerator
     from lightning.pytorch.accelerators.mps import MPSAccelerator
     from lightning.pytorch.strategies import Strategy, SingleDeviceStrategy, StrategyRegistry
@@ -436,30 +484,23 @@ def get_strategy(
     from lightning.pytorch.utilities.rank_zero import rank_zero_warn
     class _DsAcceleratorConnector(accelerator_connector._AcceleratorConnector):
         def __init__(self) -> None:
-            accelerator_connector._register_external_accelerators_and_strategies()
-            self._registered_strategies = StrategyRegistry.available_strategies()
-            self._accelerator_types = AcceleratorRegistry.available_accelerators()
-            self._parallel_devices = []
-            self._check_config_and_set_final_flags(
+            # Let Lightning initialize its version-specific connector state;
+            # retain our strategy constructor override for configured options.
+            super().__init__(
+                devices=devices,
+                num_nodes=num_nodes,
                 strategy=strategy["name"],
                 accelerator=accelerator,
                 precision=precision,
-                plugins=[],
-                sync_batchnorm=False,
             )
-            if self._accelerator_flag == "auto":
-                self._accelerator_flag = self._choose_auto_accelerator()
-            elif self._accelerator_flag == "gpu":
-                self._accelerator_flag = self._choose_gpu_accelerator_backend()
-            self._check_device_config_and_set_final_flags(devices=devices, num_nodes=num_nodes)
-            self._set_parallel_devices_and_init_accelerator()
-            if self._strategy_flag == "auto":
-                self._strategy_flag = self._choose_strategy()
-            self._check_strategy_and_fallback()
-            self._init_strategy()
             for k in ["colossalai", "bagua", "hpu", "hpu_parallel", "hpu_single", "ipu", "ipu_strategy"]:
                 if k in StrategyRegistry:
                     StrategyRegistry.remove(k)
+
+        def _lazy_init_strategy(self) -> None:
+            # This helper only constructs a strategy. Trainer owns the final
+            # accelerator/precision binding when it consumes that strategy.
+            pass
 
         def _init_strategy(self) -> None:
             assert isinstance(self._strategy_flag, (str, Strategy))

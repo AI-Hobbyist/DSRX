@@ -1,8 +1,11 @@
+import bisect
+
 import matplotlib
 import torch
 import torch.distributions
 import torch.optim
 import torch.utils.data
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 import utils
 import utils.infer_utils
@@ -32,20 +35,41 @@ from modules.metrics import (
     WordDurationConstraintViolationRate,
 )
 from modules.toplevel import DiffSingerVariance
+from utils.aux_dataset import AUX_MODULES, get_aux_binary_data_dir, parse_aux_dataset_config
 from utils.hparams import hparams
 from utils.plot import dur_to_figure, pitch_note_to_figure, curve_to_figure
+from utils.training_utils import DsBatchSampler
 
 matplotlib.use('Agg')
 
 
 class VarianceDataset(BaseDataset):
-    def __init__(self, prefix, preload=False):
-        super(VarianceDataset, self).__init__(prefix, hparams['dataset_size_key'], preload)
+    def __init__(self, prefix, preload=False, data_dir=None, spk_ids=None, names=None):
+        super(VarianceDataset, self).__init__(
+            prefix, hparams['dataset_size_key'], preload, data_dir=data_dir
+        )
+        selected_indices = range(len(self.sizes))
+        if spk_ids:
+            selected_indices = [
+                index for index in selected_indices
+                if self.metadata['spk_ids'][index] in spk_ids
+            ]
+        if names is not None:
+            selected_names = tuple(names)
+            selected_indices = [
+                index for index in selected_indices
+                if self.metadata['names'][index].startswith(selected_names)
+            ]
+        self.indices = list(selected_indices)
+        self.sizes = [self.sizes[index] for index in self.indices]
         need_energy = hparams['predict_energy']
         need_breathiness = hparams['predict_breathiness']
         need_voicing = hparams['predict_voicing']
         need_tension = hparams['predict_tension']
         self.predict_variances = need_energy or need_breathiness or need_voicing or need_tension
+
+    def __getitem__(self, index):
+        return super().__getitem__(self.indices[index])
 
     def collater(self, samples):
         batch = super().collater(samples)
@@ -90,6 +114,34 @@ class VarianceDataset(BaseDataset):
         return batch
 
 
+class MultiVarianceDataset(torch.utils.data.Dataset):
+    def __init__(self, datasets):
+        self.datasets = [dataset for dataset in datasets if len(dataset) > 0]
+        if not self.datasets:
+            raise ValueError('Auxiliary dataset has no samples after filtering.')
+        self.cumulative_sizes = []
+        total_size = 0
+        self.sizes = []
+        for dataset in self.datasets:
+            total_size += len(dataset)
+            self.cumulative_sizes.append(total_size)
+            self.sizes.extend(dataset.sizes)
+
+    def __len__(self):
+        return self.cumulative_sizes[-1]
+
+    def __getitem__(self, index):
+        dataset_index = bisect.bisect_right(self.cumulative_sizes, index)
+        previous_size = self.cumulative_sizes[dataset_index - 1] if dataset_index > 0 else 0
+        return self.datasets[dataset_index][index - previous_size]
+
+    def num_frames(self, index):
+        return self.sizes[index]
+
+    def collater(self, samples):
+        return self.datasets[0].collater(samples)
+
+
 def random_retake_masks(b, t, device):
     # 1/4 segments are True in average
     B_masks = torch.randint(low=0, high=4, size=(b, 1), dtype=torch.long, device=device) == 0
@@ -103,6 +155,14 @@ class VarianceTask(BaseTask):
     def __init__(self):
         super().__init__()
         self.dataset_cls = VarianceDataset
+        enabled_modules = {
+            name for name in AUX_MODULES
+            if hparams.get(f'predict_{name}', False)
+        }
+        self.aux_config = parse_aux_dataset_config(
+            hparams.get('aux_datasets', {}), enabled_modules=enabled_modules
+        )
+        self.aux_training_sampler = None
 
         self.diffusion_type = hparams['diffusion_type']
 
@@ -139,13 +199,74 @@ class VarianceTask(BaseTask):
         self.lambda_var_loss = hparams['lambda_var_loss']
         super()._finish_init()
 
+    def setup(self, stage):
+        super().setup(stage)
+        if self.aux_config is None:
+            return
+        self.aux_train_dataset = self._build_aux_dataset('train')
+        self.aux_valid_dataset = self._build_aux_dataset('valid')
+
+    def _build_aux_dataset(self, prefix):
+        data_dir = get_aux_binary_data_dir(hparams['binary_data_dir'])
+        if not (data_dir / f'{prefix}.meta').is_file():
+            raise FileNotFoundError(
+                f'Auxiliary dataset metadata not found: {data_dir / f"{prefix}.meta"}. '
+                f'Run scripts/binarize.py with aux_datasets enabled first.'
+            )
+        return MultiVarianceDataset([VarianceDataset(prefix, data_dir=data_dir)])
+
+    def _build_aux_dataloader(self, dataset, training):
+        sampler = DsBatchSampler(
+            dataset,
+            max_batch_frames=self.max_batch_frames if training else self.max_val_batch_frames,
+            max_batch_size=self.max_batch_size if training else self.max_val_batch_size,
+            num_replicas=self.num_replicas,
+            rank=self.global_rank,
+            sort_by_similar_size=hparams['sort_by_len'] if training else False,
+            size_reversed=training,
+            required_batch_count_multiple=hparams['accumulate_grad_batches'] if training else 1,
+            shuffle_sample=training,
+            shuffle_batch=training,
+            disallow_empty_batch=training,
+            pad_batch_assignment=training
+        )
+        if training:
+            self.aux_training_sampler = sampler
+        return torch.utils.data.DataLoader(
+            dataset,
+            collate_fn=dataset.collater,
+            batch_sampler=sampler,
+            num_workers=hparams['ds_workers'],
+            prefetch_factor=(hparams['dataloader_prefetch_factor'] if hparams['ds_workers'] > 0 else None),
+            pin_memory=True,
+            persistent_workers=(hparams['ds_workers'] > 0)
+        )
+
+    def train_dataloader(self):
+        main_loader = super().train_dataloader()
+        if self.aux_config is None:
+            return main_loader
+        aux_loader = self._build_aux_dataloader(self.aux_train_dataset, training=True)
+        return CombinedLoader({'main': main_loader, 'aux': aux_loader}, mode='max_size_cycle')
+
+    def val_dataloader(self):
+        main_loader = super().val_dataloader()
+        if self.aux_config is None or self.aux_valid_dataset is None:
+            return main_loader
+        return [main_loader, self._build_aux_dataloader(self.aux_valid_dataset, training=False)]
+
+    def on_train_epoch_start(self):
+        super().on_train_epoch_start()
+        if self.aux_training_sampler is not None:
+            self.aux_training_sampler.set_epoch(self.current_epoch)
+
     def _build_model(self):
         return DiffSingerVariance(
             vocab_size=len(self.phoneme_dictionary),
         )
 
     # noinspection PyAttributeOutsideInit
-    def build_losses_and_metrics(self):
+    def build_losses_and_metrics(self, register_metrics=True):
         if self.predict_dur:
             dur_hparams = self.duration_type_hparams
             if self.duration_type == 'deterministic':
@@ -168,44 +289,45 @@ class VarianceTask(BaseTask):
             else:
                 raise ValueError(f'Unknown duration model type: {self.duration_type}')
             self.register_validation_loss('dur_loss')
-            if self.duration_type == 'deterministic':
-                # The deterministic predictor estimates raw word sums, so this
-                # remains a meaningful pre-regulation quality metric for it.
-                self.register_validation_metric('rhythm_corr', RhythmCorrectness(tolerance=0.05))
-            else:
-                # Track whether decoded durations meet the supplied word budgets.
-                self.register_validation_metric(
-                    'constraint/word_sum_violation_rate',
-                    WordDurationConstraintViolationRate(tolerance_frames=0.)
-                )
-                self.register_validation_metric(
-                    'constraint/word_sum_max_error_frames',
-                    WordDurationConstraintMaxError()
-                )
-                self.register_validation_metric(
-                    'constraint/invalid_duration_rate',
-                    InvalidDurationRate()
-                )
+            if register_metrics:
+                if self.duration_type == 'deterministic':
+                    # The deterministic predictor estimates raw word sums, so this
+                    # remains a meaningful pre-regulation quality metric for it.
+                    self.register_validation_metric('rhythm_corr', RhythmCorrectness(tolerance=0.05))
+                else:
+                    # Track whether decoded durations meet the supplied word budgets.
+                    self.register_validation_metric(
+                        'constraint/word_sum_violation_rate',
+                        WordDurationConstraintViolationRate(tolerance_frames=0.)
+                    )
+                    self.register_validation_metric(
+                        'constraint/word_sum_max_error_frames',
+                        WordDurationConstraintMaxError()
+                    )
+                    self.register_validation_metric(
+                        'constraint/invalid_duration_rate',
+                        InvalidDurationRate()
+                    )
 
-            frame_ms = 1000. * hparams['hop_size'] / hparams['audio_sample_rate']
-            # The historical curve includes both single-phone and multi-phone words.
-            self.register_validation_metric('ph_dur_acc', PhonemeDurationAccuracy(tolerance=0.2))
-            self.register_validation_metric(
-                'duration/boundary_mae_ms_multi',
-                PhonemeBoundaryMAE(frame_scale=frame_ms)
-            )
-            self.register_validation_metric(
-                'duration/boundary_acc_2f_multi',
-                PhonemeBoundaryAccuracy(tolerance_frames=2.)
-            )
-            self.register_validation_metric(
-                'duration/allocation_score_multi',
-                DurationAllocationScore()
-            )
-            self.register_validation_metric(
-                'duration/ph_dur_acc_multi',
-                MultiPhonemeDurationAccuracy(relative_tolerance=0.2, absolute_tolerance=2.)
-            )
+                frame_ms = 1000. * hparams['hop_size'] / hparams['audio_sample_rate']
+                # The historical curve includes both single-phone and multi-phone words.
+                self.register_validation_metric('ph_dur_acc', PhonemeDurationAccuracy(tolerance=0.2))
+                self.register_validation_metric(
+                    'duration/boundary_mae_ms_multi',
+                    PhonemeBoundaryMAE(frame_scale=frame_ms)
+                )
+                self.register_validation_metric(
+                    'duration/boundary_acc_2f_multi',
+                    PhonemeBoundaryAccuracy(tolerance_frames=2.)
+                )
+                self.register_validation_metric(
+                    'duration/allocation_score_multi',
+                    DurationAllocationScore()
+                )
+                self.register_validation_metric(
+                    'duration/ph_dur_acc_multi',
+                    MultiPhonemeDurationAccuracy(relative_tolerance=0.2, absolute_tolerance=2.)
+                )
         if self.predict_pitch:
             if self.diffusion_type == 'ddpm':
                 self.pitch_loss = DiffusionLoss(loss_type=hparams['main_loss_type'])
@@ -216,8 +338,9 @@ class VarianceTask(BaseTask):
             else:
                 raise ValueError(f'Unknown diffusion type: {self.diffusion_type}')
             self.register_validation_loss('pitch_loss')
-            self.register_validation_metric('pitch_acc', RawCurveAccuracy(tolerance=0.5))
-            self.register_validation_metric('pitch_r2', RawCurveR2Score())
+            if register_metrics:
+                self.register_validation_metric('pitch_acc', RawCurveAccuracy(tolerance=0.5))
+                self.register_validation_metric('pitch_r2', RawCurveR2Score())
         if self.predict_variances:
             if self.diffusion_type == 'ddpm':
                 self.var_loss = DiffusionLoss(loss_type=hparams['main_loss_type'])
@@ -228,10 +351,21 @@ class VarianceTask(BaseTask):
             else:
                 raise ValueError(f'Unknown diffusion type: {self.diffusion_type}')
             self.register_validation_loss('var_loss')
-            for name in self.variance_prediction_list:
-                self.register_validation_metric(f'{name}_r2', RawCurveR2Score())            
+            if register_metrics:
+                for name in self.variance_prediction_list:
+                    self.register_validation_metric(f'{name}_r2', RawCurveR2Score())
 
-    def run_model(self, sample, infer=False, dur_noise=None, dur_seed=None):
+    def run_model(
+        self,
+        sample,
+        infer=False,
+        modules=None,
+        model=None,
+        dur_noise=None,
+        dur_seed=None,
+    ):
+        modules = AUX_MODULES if modules is None else set(modules)
+        model = self.model if model is None else model
         spk_ids = sample['spk_ids'] if self.use_spk_id else None  # [B,]
         languages = sample['languages'] if self.use_lang_id else None  # [B,]
         txt_tokens = sample['tokens']  # [B, T_ph]
@@ -267,7 +401,7 @@ class VarianceTask(BaseTask):
                     for v_name in self.variance_prediction_list
                 }
 
-        output = self.model(
+        output = model(
             txt_tokens, languages=languages,
             midi=midi, ph2word=ph2word,
             ph_dur=ph_dur, mel2ph=mel2ph,
@@ -287,7 +421,7 @@ class VarianceTask(BaseTask):
             return dur_pred, pitch_pred, variances_pred  # Tensor, Tensor, Dict[str, Tensor]
         else:
             losses = {}
-            if dur_pred is not None:
+            if dur_pred is not None and 'dur' in modules:
                 if self.duration_type == 'deterministic':
                     duration_loss = self.dur_loss(dur_pred, ph_dur, ph2word=ph2word)
                 elif self.duration_type == 'ddpm':
@@ -309,7 +443,7 @@ class VarianceTask(BaseTask):
                     raise ValueError(f'Unknown duration model type: {self.duration_type}')
                 losses['dur_loss'] = self.lambda_dur_loss * duration_loss
             non_padding = (mel2ph > 0).unsqueeze(-1) if mel2ph is not None else None
-            if pitch_pred is not None:
+            if pitch_pred is not None and 'pitch' in modules:
                 if self.diffusion_type == 'ddpm':
                     pitch_x_recon, pitch_noise = pitch_pred
                     pitch_loss = self.pitch_loss(
@@ -323,16 +457,26 @@ class VarianceTask(BaseTask):
                 else:
                     raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
                 losses['pitch_loss'] = self.lambda_pitch_loss * pitch_loss
-            if variances_pred is not None:
+            selected_variances = [
+                name for name in self.variance_prediction_list if name in modules
+            ]
+            if variances_pred is not None and selected_variances:
+                variance_mask = torch.tensor(
+                    [name in selected_variances for name in self.variance_prediction_list],
+                    device=mel2ph.device,
+                    dtype=torch.bool
+                )[None, :]
                 if self.diffusion_type == 'ddpm':
                     var_x_recon, var_noise = variances_pred
                     var_loss = self.var_loss(
-                        var_x_recon, var_noise, non_padding=non_padding
+                        var_x_recon, var_noise,
+                        non_padding=non_padding, feature_mask=variance_mask
                     )
                 elif self.diffusion_type == 'reflow':
                     var_v_pred, var_v_gt, t = variances_pred
                     var_loss = self.var_loss(
-                        var_v_pred, var_v_gt, t=t, non_padding=non_padding
+                        var_v_pred, var_v_gt, t=t,
+                        non_padding=non_padding, feature_mask=variance_mask
                     )
                 else:
                     raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
@@ -367,7 +511,7 @@ class VarianceTask(BaseTask):
             self.valid_metrics['rhythm_corr'].update(
                 pdur_pred=pdur_pred, pdur_target=pdur_target, ph2word=ph2word, mask=mask
             )
-            quality_pred = self._regulate_duration_for_quality(pdur_pred, pdur_target, ph2word)
+            quality_pred = VarianceTask._regulate_duration_for_quality(pdur_pred, pdur_target, ph2word)
         else:
             self.valid_metrics['constraint/word_sum_violation_rate'].update(
                 pdur_pred=pdur_pred, pdur_target=pdur_target, ph2word=ph2word, mask=mask
@@ -396,49 +540,69 @@ class VarianceTask(BaseTask):
             pdur_pred=quality_pred, pdur_target=pdur_target, ph2word=ph2word, mask=mask
         )
 
-    def _validation_step(self, sample, batch_idx):
-        losses = self.run_model(sample, infer=False)
-        sample_indices = [int(index) for index in sample['indices']]
-        should_plot_batch = min(sample_indices) < hparams['num_valid_plots']
-        # Evaluate duration across the validation set and plot the selected samples.
-        if self.predict_dur or should_plot_batch:
-            def sample_get(key, idx, abs_idx):
-                return sample[key][idx][:self.valid_dataset.metadata[key][abs_idx]].unsqueeze(0)
+    def _training_step(self, sample):
+        if self.aux_config is None:
+            return super()._training_step(sample)
+        main_modules = AUX_MODULES - self.aux_config['modules']
+        main_losses = self.run_model(sample['main'], modules=main_modules)
+        aux_losses = self.run_model(sample['aux'], modules=self.aux_config['modules'])
+        losses = main_losses.copy()
+        for name, value in aux_losses.items():
+            losses[name] = losses.get(name, 0) + value
+        batch_size = sample['main']['size'] + sample['aux']['size']
+        return sum(losses.values()), {**losses, 'batch_size': float(batch_size)}
 
-            dur_noise = self._make_validation_duration_noise(sample)
-            dur_preds, pitch_preds, variances_preds = self.run_model(
-                sample, infer=True, dur_noise=dur_noise
+    def _validation_step(self, sample, batch_idx, modules=None, plot=True, model=None):
+        modules = AUX_MODULES if modules is None else set(modules)
+        losses = VarianceTask.run_model(
+            self, sample, infer=False, modules=modules, model=model
+        )
+        sample_indices = [int(index) for index in sample['indices']]
+        should_plot_batch = plot and min(sample_indices) < hparams['num_valid_plots']
+        # Evaluate duration across the validation set and plot the selected samples.
+        if (self.predict_dur and 'dur' in modules) or should_plot_batch:
+
+            def sample_get(key, idx, abs_idx):
+                return sample[key][idx][
+                    : self.valid_dataset.metadata[key][abs_idx]
+                ].unsqueeze(0)
+
+            dur_noise = VarianceTask._make_validation_duration_noise(self, sample)
+            dur_preds, pitch_preds, variances_preds = VarianceTask.run_model(
+                self, sample, infer=True, dur_noise=dur_noise, model=model
             )
-            if dur_preds is not None:
+            if dur_preds is not None and 'dur' in modules:
                 duration_len = sample['ph_dur'].shape[1]
                 duration_pred = dur_preds[:, :duration_len]
                 duration_target = sample['ph_dur']
                 duration_ph2word = sample['ph2word']
                 duration_mask = sample['tokens'] != 0
-                self._update_duration_metrics(
-                    duration_pred, duration_target, duration_ph2word, duration_mask
+                VarianceTask._update_duration_metrics(
+                    self, duration_pred, duration_target, duration_ph2word, duration_mask
                 )
 
             if should_plot_batch:
                 for i, data_idx in enumerate(sample_indices):
                     if data_idx >= hparams['num_valid_plots']:
                         continue
-                    if dur_preds is not None:
+                    if dur_preds is not None and 'dur' in modules:
                         dur_len = self.valid_dataset.metadata['ph_dur'][data_idx]
                         gt_dur = sample_get('ph_dur', i, data_idx)
                         pred_dur = dur_preds[i][:dur_len].unsqueeze(0)
-                        self.plot_dur(
+                        VarianceTask.plot_dur(
+                            self,
                             data_idx, gt_dur, pred_dur,
                             txt=self.valid_dataset.metadata['ph_texts'][data_idx].split()
                         )
-                    if pitch_preds is not None:
+                    if pitch_preds is not None and 'pitch' in modules:
                         pitch_len = self.valid_dataset.metadata['pitch'][data_idx]
                         pred_pitch = sample_get('base_pitch', i, data_idx) + pitch_preds[i][:pitch_len].unsqueeze(0)
                         gt_pitch = sample_get('pitch', i, data_idx)
                         mask = (sample_get('mel2ph', i, data_idx) > 0) & ~sample_get('uv', i, data_idx)
                         self.valid_metrics['pitch_acc'].update(pred=pred_pitch, target=gt_pitch, mask=mask)
                         self.valid_metrics['pitch_r2'].update(pred=pred_pitch, target=gt_pitch, mask=mask)
-                        self.plot_pitch(
+                        VarianceTask.plot_pitch(
+                            self,
                             data_idx,
                             gt_pitch=gt_pitch,
                             pred_pitch=pred_pitch,
@@ -447,18 +611,39 @@ class VarianceTask(BaseTask):
                             note_rest=sample_get('note_rest', i, data_idx)
                         )
                     for name in self.variance_prediction_list:
+                        if name not in modules:
+                            continue
                         variance_len = self.valid_dataset.metadata[name][data_idx]
                         gt_variances = sample[name][i][:variance_len].unsqueeze(0)
                         pred_variances = variances_preds[name][i][:variance_len].unsqueeze(0)
                         mask = (sample_get('mel2ph', i, data_idx) > 0) & ~sample_get('uv', i, data_idx)
                         self.valid_metrics[f'{name}_r2'].update(pred=pred_variances, target=gt_variances, mask=mask)
-                        self.plot_curve(
+                        VarianceTask.plot_curve(
+                            self,
                             data_idx,
                             gt_curve=gt_variances,
                             pred_curve=pred_variances,
                             curve_name=name
                         )
         return losses, sample['size']
+
+    def validation_step(self, sample, batch_idx, dataloader_idx=0):
+        if self.aux_config is None:
+            return super().validation_step(sample, batch_idx)
+        modules = (
+            AUX_MODULES - self.aux_config['modules']
+            if dataloader_idx == 0 else self.aux_config['modules']
+        )
+        if sample['size'] > 0:
+            with torch.autocast(self.device.type, enabled=False):
+                losses, weight = self._validation_step(
+                    sample, batch_idx, modules=modules, plot=dataloader_idx == 0
+                )
+            if not losses:
+                return
+            losses = {'total_loss': sum(losses.values()), **losses}
+            for name, value in losses.items():
+                self.valid_losses[name].update(value, weight=weight)
 
     ############
     # validation plots

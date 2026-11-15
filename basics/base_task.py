@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import pathlib
@@ -12,6 +13,7 @@ import utils
 matplotlib.use('Agg')
 
 import torch
+import torch.nn as nn
 import torch.utils.data
 from torchmetrics import Metric, MeanMetric
 import lightning.pytorch as pl
@@ -20,7 +22,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_debug, rank_zero_inf
 from basics.base_module import CategorizedModule
 from utils.hparams import hparams
 from utils.training_utils import (
-    DsModelCheckpoint, DsTQDMProgressBar,
+    DsModelCheckpoint, DsModelSummary, DsTQDMProgressBar,
     DsBatchSampler, build_logger,
     get_latest_checkpoint_path, get_strategy
 )
@@ -76,22 +78,60 @@ class BaseTask(pl.LightningModule):
         # Inject LoRA if enabled
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+            uses_dit = self._uses_dit_backend()
             try:
                 from utils.lora import inject_lora, mark_only_lora_as_trainable
                 rank = int(lora_cfg.get('rank', 8))
                 alpha = int(lora_cfg.get('alpha', 16))
                 targets = lora_cfg.get('target_modules', ['linear'])
-                inject_lora(self.model, rank=rank, alpha=alpha, target_modules=targets)
-                mark_only_lora_as_trainable(self.model, train_bias=bool(lora_cfg.get('train_bias', False)))
                 base_ckpt = lora_cfg.get('base_ckpt')
+                if uses_dit and not base_ckpt:
+                    raise ValueError('DiT LoRA requires lora.base_ckpt.')
                 if base_ckpt:
                     from utils import load_ckpt
-                    load_ckpt(self.model, base_ckpt, prefix_in_ckpt='model', strict=False, device=self.device)
+                    checkpoint_path = load_ckpt(
+                        self.model, base_ckpt, prefix_in_ckpt='model',
+                        strict=uses_dit, device=self.device
+                    )
+                    if uses_dit:
+                        print(f'| DiT LoRA base SHA-256: {self._sha256(checkpoint_path)}')
+                matched_modules = inject_lora(
+                    self.model, rank=rank, alpha=alpha, target_modules=targets,
+                    require_match=uses_dit
+                )
+                mark_only_lora_as_trainable(
+                    self.model, train_bias=bool(lora_cfg.get('train_bias', False))
+                )
+                trainable_params = sum(
+                    parameter.numel() for parameter in self.model.parameters()
+                    if parameter.requires_grad
+                )
+                print(f'| LoRA matched {len(matched_modules)} modules: {matched_modules}')
+                print(f'| LoRA trainable parameters: {trainable_params:,}')
             except Exception as e:
+                if uses_dit:
+                    raise RuntimeError(f'DiT LoRA setup failed: {e}') from e
                 print(f'| warn: LoRA injection failed: {e}')
 
-        self.valid_losses: Dict[str, Metric] = {}
-        self.valid_metrics: Dict[str, Metric] = {}
+        self.valid_losses = nn.ModuleDict()
+        self.valid_metrics = nn.ModuleDict()
+
+    @staticmethod
+    def _uses_dit_backend() -> bool:
+        backbone_types = [hparams.get('backbone_type')]
+        for key in ('pitch_prediction_args', 'variances_prediction_args'):
+            config = hparams.get(key, {})
+            if isinstance(config, dict):
+                backbone_types.append(config.get('backbone_type'))
+        return 'dit' in backbone_types
+
+    @staticmethod
+    def _sha256(path: pathlib.Path) -> str:
+        digest = hashlib.sha256()
+        with path.open('rb') as checkpoint_file:
+            for chunk in iter(lambda: checkpoint_file.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _finish_init(self):
         self.register_validation_loss('total_loss')
@@ -231,6 +271,9 @@ class BaseTask(pl.LightningModule):
         total_loss = sum(losses.values())
         return total_loss, {**losses, 'batch_size': float(sample['size'])}
 
+    def _training_log_metrics(self, log_outputs):
+        return log_outputs
+
     def training_step(self, sample, batch_idx):
         total_loss, log_outputs = self._training_step(sample)
 
@@ -238,8 +281,9 @@ class BaseTask(pl.LightningModule):
         self.log_dict(log_outputs, prog_bar=True, logger=False, on_step=True, on_epoch=False)
         self.log('lr', self.lr_schedulers().get_last_lr()[0], prog_bar=True, logger=False, on_step=True, on_epoch=False)
         # logs to tensorboard
+        tensorboard_outputs = self._training_log_metrics(log_outputs)
         if self.global_step % hparams['log_interval'] == 0:
-            tb_log = {f'training/{k}': v for k, v in log_outputs.items()}
+            tb_log = {f'training/{k}': v for k, v in tensorboard_outputs.items()}
             tb_log['training/lr'] = self.lr_schedulers().get_last_lr()[0]
             self.logger.log_metrics(tb_log, step=self.global_step)
             
@@ -463,6 +507,9 @@ class BaseTask(pl.LightningModule):
                 ),
                 # LearningRateMonitor(logging_interval='step'),
                 DsTQDMProgressBar(),
+                DsModelSummary(
+                    max_depth=2 if hparams.get('all_in_one', {}).get('enabled', False) else 1
+                ),
             ],
             logger=logger,
             gradient_clip_val=hparams['clip_grad_norm'],
@@ -481,6 +528,8 @@ class BaseTask(pl.LightningModule):
             def train_payload_copy():
                 # Copy files to work_dir
                 binary_dir = pathlib.Path(hparams['binary_data_dir'])
+                if hparams.get('all_in_one', {}).get('enabled', False):
+                    binary_dir /= 'acoustic'
                 spk_map_dst = work_dir / 'spk_map.json'
                 spk_map_src = binary_dir / 'spk_map.json'
                 shutil.copy(spk_map_src, spk_map_dst)

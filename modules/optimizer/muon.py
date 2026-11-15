@@ -110,7 +110,10 @@ def get_params_for_muon(model) -> List[Parameter]:
         for param in module.parameters(recurse=False):
             if not param.requires_grad:
                 continue
-            if not isinstance(module, nn.Embedding) and param.ndim >= 2:
+            if (
+                    not isinstance(module, nn.Embedding)
+                    and param.ndim >= 2
+            ):
                 muon_params.append(param)
     return muon_params
 

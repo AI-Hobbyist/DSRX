@@ -45,11 +45,13 @@ class IndexedDataset:
 
 
 class IndexedDatasetBuilder:
-    def __init__(self, path, prefix, allowed_attr=None, auto_increment=True):
-        self.path = pathlib.Path(path) / f'{prefix}.data'
+    def __init__(
+        self, path, prefix, allowed_attr=None, auto_increment=True, resume=False
+    ):
+        self.path = pathlib.Path(path) / f"{prefix}.data"
         self.prefix = prefix
-        self.dset = h5py.File(self.path, 'w')
-        self.counter = 0
+        self.dset = h5py.File(self.path, "a" if resume else "w")
+        self.counter = len(self.dset) if resume else 0
         self.auto_increment = auto_increment
         if allowed_attr is not None:
             self.allowed_attr = set(allowed_attr)
@@ -57,8 +59,15 @@ class IndexedDatasetBuilder:
             self.allowed_attr = None
 
     def add_item(self, item, item_no=None):
-        if self.auto_increment and item_no is not None or not self.auto_increment and item_no is None:
-            raise ValueError('auto_increment and provided item_no are mutually exclusive')
+        if (
+            self.auto_increment
+            and item_no is not None
+            or not self.auto_increment
+            and item_no is None
+        ):
+            raise ValueError(
+                "auto_increment and provided item_no are mutually exclusive"
+            )
         if self.allowed_attr is not None:
             item = {
                 k: item[k]
@@ -77,12 +86,22 @@ class IndexedDatasetBuilder:
     def finalize(self):
         self.dset.close()
 
+    def truncate(self, count):
+        if len(self.dset) < count:
+            raise ValueError(
+                f"Binary has fewer records than its checkpoint: {self.path}"
+            )
+        for name in list(self.dset):
+            if int(name) >= count:
+                del self.dset[name]
+        self.counter = count
+
 
 if __name__ == "__main__":
     import random
     from tqdm import tqdm
 
-    ds_path = './ckpt/indexed_ds_example'
+    ds_path = "./ckpt/indexed_ds_example"
     size = 100
     items = [{"a": np.random.normal(size=[10000, 10]),
               "b": np.random.normal(size=[10000, 10])} for i in range(size)]

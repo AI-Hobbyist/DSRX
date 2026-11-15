@@ -1,5 +1,7 @@
 # task
 task_cls: null
+all_in_one:
+  enabled: false
 
 #############
 # dataset

@@ -14,3 +14,7 @@ class NSFHiFiGANNative(torch.nn.Module):
         mel = mel.transpose(1, 2)
         wav = self.generator(mel, f0)
         return wav.squeeze(1)
+
+
+# Retain the ONNX exporter API alongside the native OpenUtau deployment views.
+NSFHiFiGANONNX = NSFHiFiGANNative

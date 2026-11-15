@@ -249,13 +249,60 @@ class DecomposedWaveformVocalRemover(DecomposedWaveformPyWorld):
         self.sep_model = SEP_MODEL
 
     def _infer(self):
+        from preprocessing.mini_ddsp_cache import (
+            enabled,
+            harmonic_cache_path,
+            vr_work_sample_rate,
+        )
+
+        cache_path = None
+        if enabled():
+            import pickle
+
+            cache_path = harmonic_cache_path(self._waveform, self._samplerate)
+            if cache_path.exists():
+                with cache_path.open("rb") as source:
+                    self._harmonic_part = pickle.load(source)
+                self._aperiodic_part = self._waveform - self._harmonic_part
+                return
         with torch.no_grad():
-            x = torch.from_numpy(self._waveform).to(self._device).reshape(1, 1, -1)
+            waveform = self._waveform
+            work_rate = self._samplerate
+            if cache_path is not None:
+                import librosa
+
+                work_rate = vr_work_sample_rate()
+                if self._samplerate != work_rate:
+                    waveform = librosa.resample(
+                        waveform, orig_sr=self._samplerate, target_sr=work_rate
+                    )
+            x = torch.from_numpy(waveform).to(self._device).reshape(1, 1, -1)
             if not self.sep_model.is_mono:
                 x = x.repeat(1, 2, 1)
             x = self.sep_model.predict_from_audio(x)
             x = torch.mean(x, dim=1)
             self._harmonic_part = x.squeeze().cpu().numpy()
+            if cache_path is not None:
+                if work_rate != self._samplerate:
+                    self._harmonic_part = librosa.resample(
+                        self._harmonic_part,
+                        orig_sr=work_rate,
+                        target_sr=self._samplerate,
+                    )
+                self._harmonic_part = librosa.util.fix_length(
+                    self._harmonic_part, size=len(self._waveform)
+                ).astype(np.float32)
+                # Atomic replace avoids exposing a partially written result to
+                # another preprocessing worker processing the same source.
+                import os
+                import tempfile
+
+                with tempfile.NamedTemporaryFile(
+                    dir=cache_path.parent, delete=False
+                ) as target:
+                    pickle.dump(self._harmonic_part, target)
+                    temporary = target.name
+                os.replace(temporary, cache_path)
             self._aperiodic_part = self._waveform - self._harmonic_part
 
     def harmonic(self, k: int = None) -> np.ndarray:

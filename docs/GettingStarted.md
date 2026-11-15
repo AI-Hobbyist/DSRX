@@ -96,6 +96,19 @@ python scripts/infer.py acoustic --help
 
 for more configurable options.
 
+For an all-in-one checkpoint, run both stages from the same model:
+
+```bash
+python scripts/infer.py all-in-one my_song.ds --exp my_experiment --out outputs/test
+```
+
+This predicts all enabled variance parameters, saves `my_song_variance.ds`,
+and synthesizes `my_song.wav`. Use `--ckpt 100000` to select a training step,
+`--steps 20` to set sampling steps for both stages, and `--title result` to
+change the output basename. Keep the experiment's `config.yaml`, dictionaries,
+and speaker/language maps alongside the checkpoint, with a valid `vocoder_ckpt`.
+If selective FP16 in the NSF vocoder produces invalid audio, use `--vocoder-fp32`.
+
 CUDA inference automatically enables the profiled native PyTorch fast path,
 including selective FP16 linear layers, a frozen TorchScript velocity backbone
 and representative phrase-length warmup. See

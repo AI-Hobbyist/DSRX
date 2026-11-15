@@ -20,8 +20,10 @@ matplotlib.use('Agg')
 
 
 class AcousticDataset(BaseDataset):
-    def __init__(self, prefix, preload=False):
-        super(AcousticDataset, self).__init__(prefix, hparams['dataset_size_key'], preload)
+    def __init__(self, prefix, preload=False, data_dir=None):
+        super(AcousticDataset, self).__init__(
+            prefix, hparams['dataset_size_key'], preload, data_dir=data_dir
+        )
         self.required_variances = {}  # key: variance name, value: padding value
         if hparams['use_energy_embed']:
             self.required_variances['energy'] = 0.0
@@ -82,9 +84,9 @@ class AcousticTask(BaseTask):
             self.train_aux_decoder = self.shallow_args['train_aux_decoder']
             self.train_diffusion = self.shallow_args['train_diffusion']
 
-        self.use_vocoder = hparams['infer'] or hparams['val_with_vocoder']
+        self.use_vocoder = hparams["infer"] or hparams["val_with_vocoder"]
         if self.use_vocoder:
-            self.vocoder: BaseVocoder = get_vocoder_cls(hparams)()
+            self.vocoder: BaseVocoder = self._build_vocoder()
         self.logged_gt_wav = set()
         self.required_variances = []
         if hparams['use_energy_embed']:
@@ -103,6 +105,9 @@ class AcousticTask(BaseTask):
             out_dims=hparams['audio_num_mel_bins']
         )
 
+    def _build_vocoder(self):
+        return get_vocoder_cls(hparams)()
+
     # noinspection PyAttributeOutsideInit
     def build_losses_and_metrics(self):
         if self.use_shallow_diffusion:
@@ -119,7 +124,8 @@ class AcousticTask(BaseTask):
             raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
         self.register_validation_loss('mel_loss')
 
-    def run_model(self, sample, infer=False):
+    def run_model(self, sample, infer=False, model=None, return_output=False):
+        model = self.model if model is None else model
         txt_tokens = sample['tokens']  # [B, T_ph]
         target = sample['mel']  # [B, T_s, M]
         mel2ph = sample['mel2ph']  # [B, T_s]
@@ -140,11 +146,19 @@ class AcousticTask(BaseTask):
             languages = sample['languages']
         else:
             languages = None
-        output: ShallowDiffusionOutput = self.model(
-            txt_tokens, mel2ph=mel2ph, f0=f0, **variances,
-            key_shift=key_shift, speed=speed,
-            spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
-            gt_mel=target, infer=infer
+        output: ShallowDiffusionOutput = model(
+            txt_tokens,
+            mel2ph=mel2ph,
+            f0=f0,
+            **variances,
+            key_shift=key_shift,
+            speed=speed,
+            spk_embed_id=spk_embed_id,
+            artifact_level=artifact_level,
+            languages=languages,
+            gt_mel=target,
+            infer=infer,
+            return_clean=return_output and not infer,
         )
 
         if infer:
@@ -154,7 +168,7 @@ class AcousticTask(BaseTask):
 
             if output.aux_out is not None:
                 aux_out = output.aux_out
-                norm_gt = self.model.aux_decoder.norm_spec(target)
+                norm_gt = model.aux_decoder.norm_spec(target)
                 aux_mel_loss = self.lambda_aux_mel_loss * self.aux_mel_loss(aux_out, norm_gt)
                 losses['aux_mel_loss'] = aux_mel_loss
 
@@ -170,7 +184,7 @@ class AcousticTask(BaseTask):
                     raise ValueError(f"Unknown diffusion type: {self.diffusion_type}")
                 losses['mel_loss'] = mel_loss
 
-            return losses
+            return (losses, output) if return_output else losses
 
     def on_train_start(self):
         if self.use_vocoder and self.vocoder.get_device() != self.device:
@@ -180,10 +194,10 @@ class AcousticTask(BaseTask):
         if self.use_vocoder and self.vocoder.get_device() != self.device:
             self.vocoder.to_device(self.device)
 
-    def _validation_step(self, sample, batch_idx):
-        losses = self.run_model(sample, infer=False)
+    def _validation_step(self, sample, batch_idx, model=None):
+        losses = self.run_model(sample, infer=False, model=model)
         if sample['size'] > 0 and min(sample['indices']) < hparams['num_valid_plots']:
-            mel_out: ShallowDiffusionOutput = self.run_model(sample, infer=True)
+            mel_out: ShallowDiffusionOutput = self.run_model(sample, infer=True, model=model)
             for i in range(len(sample['indices'])):
                 data_idx = sample['indices'][i].item()
                 if data_idx < hparams['num_valid_plots']:

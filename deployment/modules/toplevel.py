@@ -9,17 +9,26 @@ from torch import Tensor
 from deployment.modules.diffusion import (
     GaussianDiffusionNative, PitchDiffusionNative, MultiVarianceDiffusionNative
 )
+from deployment.modules.dit import DiTBlockONNX
 from deployment.modules.rectified_flow import (
     RectifiedFlowNative, PitchRectifiedFlowNative, MultiVarianceRectifiedFlowNative
 )
 from deployment.modules.fastspeech2 import FastSpeech2AcousticNative, FastSpeech2VarianceNative
 from modules.toplevel import DiffSingerAcoustic, DiffSingerVariance
+from modules.aux_decoder.dit import DiTAuxDecoder
 from utils.hparams import hparams
 
 
 class DiffSingerAcousticNative(DiffSingerAcoustic):
     def __init__(self, vocab_size, out_dims, cross_lingual_token_idx=None):
         super().__init__(vocab_size, out_dims)
+        if self.use_shallow_diffusion and isinstance(
+            self.aux_decoder.decoder, DiTAuxDecoder
+        ):
+            decoder = self.aux_decoder.decoder
+            decoder.blocks = nn.ModuleList(
+                [DiTBlockONNX(block) for block in decoder.blocks]
+            )
         del self.fs2
         del self.diffusion
         self.fs2 = FastSpeech2AcousticNative(
@@ -394,3 +403,8 @@ class DiffSingerVarianceNative(DiffSingerVariance):
                 del model.melody_encoder
         model.forward = model.forward_variance_postprocess
         return model
+
+
+# Retain the ONNX exporter API alongside the native OpenUtau deployment views.
+DiffSingerAcousticONNX = DiffSingerAcousticNative
+DiffSingerVarianceONNX = DiffSingerVarianceNative

@@ -121,3 +121,9 @@ class MultiVarianceRectifiedFlowNative(RectifiedFlowNative, MultiVarianceRectifi
         x = x * d + m
         x = x.mean(dim=-1)
         return x
+
+
+# Retain the ONNX exporter API alongside the native OpenUtau deployment views.
+RectifiedFlowONNX = RectifiedFlowNative
+PitchRectifiedFlowONNX = PitchRectifiedFlowNative
+MultiVarianceRectifiedFlowONNX = MultiVarianceRectifiedFlowNative

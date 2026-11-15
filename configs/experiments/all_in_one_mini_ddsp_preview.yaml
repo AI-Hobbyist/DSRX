@@ -1,0 +1,79 @@
+# CUDA preview: seed42, 140 training sources / 10 validation sources.
+# The checkpoint base pins the actual pretrained architecture.
+# run_preview150.py performs strict pretrained initialization.
+base_config:
+- configs/templates/all_in_one_dslight_50mb.yaml
+- ckpt/dslight/config.yaml
+datasets:
+- artifact_level: 0
+  language: zh
+  raw_data_dir: artifacts\mini_ddsp_preview\data150\raw
+  speaker: opencpop
+  spk_id: 0
+  test_prefixes:
+  - '2070002621'
+  - '2012000457'
+  - '2003000103'
+  - '2082003039'
+  - '2029001127'
+  - '2026001004'
+  - '2023000915'
+  - '2015000572'
+  - '2082003018'
+  - '2033001224'
+binary_data_dir: artifacts\mini_ddsp_preview\data150\binary
+dictionaries:
+  zh: ckpt/dslight/dictionary-zh.txt
+hnsep_sample_rate: 44100
+binarization_args:
+  num_workers: 0
+  allow_missing_phonemes: true
+augmentation_args:
+  random_pitch_shifting:
+    enabled: true
+    range:
+    - -2
+    - 2
+    scale: 0.25
+  random_time_stretching:
+    enabled: true
+    range:
+    - 0.9
+    - 1.1
+    scale: 0.25
+all_in_one:
+  enabled: true
+  mini_ddsp:
+    enabled: true
+    harmonics: 128
+    noise_bands: 64
+    hidden_size: 256
+    num_layers: 3
+    kernel_size: 31
+    harmonic_group_size: 16
+    harmonic_analysis_cycles: 4
+    segment_frames: 32
+    warmup_steps: 200
+    joint_ramp_steps: 200
+max_updates: 1000
+val_check_interval: 200
+max_sample_frames: 4096
+max_batch_size: 2
+max_batch_frames: 8192
+max_val_batch_size: 1
+accumulate_grad_batches: 1
+ds_workers: 0
+optimizer_args:
+  optimizer_cls: torch.optim.AdamW
+  lr: 0.0001
+  weight_decay: 0.0
+val_with_vocoder: true
+num_valid_plots: 1
+val_with_variance:
+  enable: true
+  zh:
+  - artifacts\mini_ddsp_preview\la.ds
+logger_backend: tensorboard
+log_interval: 10
+finetune_enabled: false
+freezing_enabled: false

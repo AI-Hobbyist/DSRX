@@ -137,20 +137,23 @@ class BatchInferenceBackend:
     def _load_variance_model(self, reporter: ReportFn, predictions: set):
         if self._variance_infer is not None and self._variance_predictions == predictions:
             return
-        if self._variance_infer is not None and self._variance_predictions != predictions:
-            del self._variance_infer
-            self._variance_infer = None
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
         reporter("status", {"state": "loading_variance_model"})
-        self._variance_infer = DiffSingerVarianceInfer(
-            device=self.device,
-            ckpt_steps=self.ckpt_steps,
-            predictions=predictions,
-        )
+        try:
+            replacement = DiffSingerVarianceInfer(
+                device=self.device,
+                ckpt_steps=self.ckpt_steps,
+                predictions=predictions,
+            )
+        except Exception:
+            self._release_model_resources()
+            raise
+        previous = self._variance_infer
+        self._variance_infer = replacement
         self._variance_predictions = predictions
-        optimization = getattr(self._variance_infer, "inference_optimization", None)
+        if previous is not None:
+            del previous
+            self._release_model_resources()
+        optimization = getattr(replacement, "inference_optimization", None)
         reporter(
             "status",
             {
@@ -159,6 +162,13 @@ class BatchInferenceBackend:
             },
         )
         self._last_active = time.time()
+
+    def _release_model_resources(self):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(torch.device(self.device or "cuda"))
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _unload_model(self, reason: str):
         if self._infer is None and self._variance_infer is None:
@@ -173,9 +183,7 @@ class BatchInferenceBackend:
                     del self._variance_infer
                     self._variance_infer = None
                     self._variance_predictions = None
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                self._release_model_resources()
             except Exception as exc:
                 print(f"| backend unload failed: {exc}")
 

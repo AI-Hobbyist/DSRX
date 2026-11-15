@@ -20,13 +20,30 @@ from modules.fastspeech.acoustic_encoder import FastSpeech2Acoustic
 from modules.fastspeech.param_adaptor import ParameterAdaptorModule
 from modules.fastspeech.tts_modules import RhythmRegulator, LengthRegulator
 from modules.fastspeech.variance_encoder import FastSpeech2Variance, MelodyEncoder
-from utils.hparams import hparams
+from utils.hparams import hparams, mini_ddsp_config
 
 
 class ShallowDiffusionOutput:
-    def __init__(self, *, aux_out=None, diff_out=None):
+
+    def __init__(self, *, aux_out=None, diff_out=None, clean_out=None):
         self.aux_out = aux_out
         self.diff_out = diff_out
+        self.clean_out = clean_out
+
+
+class DiffSingerAllInOne(CategorizedModule):
+    @property
+    def category(self):
+        return 'all_in_one'
+
+    def __init__(self, vocab_size, out_dims):
+        super().__init__()
+        self.acoustic = DiffSingerAcoustic(vocab_size=vocab_size, out_dims=out_dims)
+        self.variance = DiffSingerVariance(vocab_size=vocab_size)
+        if mini_ddsp_config(hparams).get('enabled', False):
+            from modules.vocoders.mini_ddsp import MiniDDSP
+
+            self.vocoder = MiniDDSP(hparams)
 
 
 class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
@@ -76,23 +93,44 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
                 backbone_type=self.backbone_type,
                 backbone_args=self.backbone_args,
                 spec_min=hparams['spec_min'],
-                spec_max=hparams['spec_max']
+                spec_max=hparams['spec_max'],
+                use_shallow_diffusion=self.use_shallow_diffusion
             )
         else:
             raise NotImplementedError(self.diffusion_type)
 
     def forward(
-            self, txt_tokens, mel2ph, f0, key_shift=None, speed=None,
-            spk_embed_id=None, artifact_level=None, languages=None, gt_mel=None, infer=True, **kwargs
+        self,
+        txt_tokens,
+        mel2ph,
+        f0,
+        key_shift=None,
+        speed=None,
+        spk_embed_id=None,
+        artifact_level=None,
+        languages=None,
+        gt_mel=None,
+        infer=True,
+        return_clean=False,
+        **kwargs,
     ) -> ShallowDiffusionOutput:
         condition = self.fs2(
-            txt_tokens, mel2ph, f0, key_shift=key_shift, speed=speed,
-            spk_embed_id=spk_embed_id, artifact_level=artifact_level, languages=languages,
-            **kwargs
+            txt_tokens,
+            mel2ph,
+            f0,
+            key_shift=key_shift,
+            speed=speed,
+            spk_embed_id=spk_embed_id,
+            artifact_level=artifact_level,
+            languages=languages,
+            **kwargs,
         )
+        valid_mask = mel2ph > 0
         if infer:
             if self.use_shallow_diffusion:
-                aux_mel_pred = self.aux_decoder(condition, infer=True)
+                aux_mel_pred = self.aux_decoder(
+                    condition, infer=True, valid_mask=valid_mask
+                )
                 aux_mel_pred *= ((mel2ph > 0).float()[:, :, None])
                 if gt_mel is not None and self.shallow_args['val_gt_start']:
                     src_mel = gt_mel
@@ -100,26 +138,54 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
                     src_mel = aux_mel_pred
             else:
                 aux_mel_pred = src_mel = None
-            mel_pred = self.diffusion(condition, src_spec=src_mel, infer=True)
+            mel_pred = self.diffusion(
+                condition, src_spec=src_mel, infer=True, valid_mask=valid_mask
+            )
             mel_pred *= ((mel2ph > 0).float()[:, :, None])
             return ShallowDiffusionOutput(aux_out=aux_mel_pred, diff_out=mel_pred)
         else:
             if self.use_shallow_diffusion:
                 if self.train_aux_decoder:
                     aux_cond = condition * self.aux_decoder_grad + condition.detach() * (1 - self.aux_decoder_grad)
-                    aux_out = self.aux_decoder(aux_cond, infer=False)
+                    aux_out = self.aux_decoder(
+                        aux_cond, infer=False, valid_mask=valid_mask
+                    )
                 else:
                     aux_out = None
                 if self.train_diffusion:
-                    diff_out = self.diffusion(condition, gt_spec=gt_mel, infer=False)
+                    diff_out = self.diffusion(
+                        condition,
+                        gt_spec=gt_mel,
+                        infer=False,
+                        valid_mask=valid_mask,
+                        return_clean=return_clean,
+                    )
                 else:
                     diff_out = None
-                return ShallowDiffusionOutput(aux_out=aux_out, diff_out=diff_out)
+                clean_out = None
+                if return_clean and diff_out is not None:
+                    diff_out, clean_out = diff_out
+                    clean_out = clean_out * valid_mask[:, :, None]
+                return ShallowDiffusionOutput(
+                    aux_out=aux_out, diff_out=diff_out, clean_out=clean_out
+                )
 
             else:
                 aux_out = None
-                diff_out = self.diffusion(condition, gt_spec=gt_mel, infer=False)
-                return ShallowDiffusionOutput(aux_out=aux_out, diff_out=diff_out)
+                diff_out = self.diffusion(
+                    condition,
+                    gt_spec=gt_mel,
+                    infer=False,
+                    valid_mask=valid_mask,
+                    return_clean=return_clean,
+                )
+                clean_out = None
+                if return_clean:
+                    diff_out, clean_out = diff_out
+                    clean_out = clean_out * valid_mask[:, :, None]
+                return ShallowDiffusionOutput(
+                    aux_out=aux_out, diff_out=diff_out, clean_out=clean_out
+                )
 
 
 class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
@@ -240,6 +306,7 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
         encoder_out = F.pad(encoder_out, [0, 0, 1, 0])
         mel2ph_ = mel2ph[..., None].repeat([1, 1, hparams['hidden_size']])
         condition = torch.gather(encoder_out, 1, mel2ph_)
+        valid_mask = mel2ph > 0
 
         if self.use_spk_id:
             condition += spk_embed
@@ -286,9 +353,13 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
                 pitch_cond += self.base_pitch_embed(base_pitch[:, :, None])
 
             if infer:
-                pitch_pred_out = self.pitch_predictor(pitch_cond, infer=True)
+                pitch_pred_out = self.pitch_predictor(
+                    pitch_cond, infer=True, valid_mask=valid_mask
+                )
             else:
-                pitch_pred_out = self.pitch_predictor(pitch_cond, pitch - base_pitch, infer=False)
+                pitch_pred_out = self.pitch_predictor(
+                    pitch_cond, pitch - base_pitch, infer=False, valid_mask=valid_mask
+                )
         else:
             pitch_pred_out = None
 
@@ -307,7 +378,9 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
             ]
             var_cond += torch.stack(variance_embeds, dim=-1).sum(-1)
 
-        variance_outputs = self.variance_predictor(var_cond, variance_inputs, infer=infer)
+        variance_outputs = self.variance_predictor(
+            var_cond, variance_inputs, infer=infer, valid_mask=valid_mask
+        )
 
         if infer:
             variances_pred_out = self.collect_variance_outputs(variance_outputs)

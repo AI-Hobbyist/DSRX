@@ -19,9 +19,18 @@ from modules.fastspeech.tts_modules import (
     mel2ph_to_dur
 )
 from modules.toplevel import DiffSingerVariance
-from inference.optimization import apply_inference_math_mode, optimize_model_for_inference
+from inference.optimization import (
+    apply_inference_math_mode,
+    optimize_model_for_inference,
+    validate_inference_length,
+)
 from utils import load_ckpt
-from utils.lora import inject_lora, load_lora_state_dict
+from utils.lora import (
+    inject_lora,
+    load_dit_lora_for_inference,
+    load_lora_state_dict,
+    uses_dit_backend,
+)
 from utils.hparams import hparams
 from utils.infer_utils import resample_align_curve
 from utils.phoneme_utils import load_phoneme_dictionary
@@ -31,23 +40,28 @@ from utils.pitch_utils import interp_f0
 class DiffSingerVarianceInfer(BaseSVSInfer):
     def __init__(
             self, device=None, ckpt_steps=None,
-            predictions: set = None
+            predictions: set = None, model=None, spk_map=None, lang_map=None
     ):
         super().__init__(device=device)
         self.phoneme_dictionary = load_phoneme_dictionary()
-        if hparams['use_spk_id']:
+        if hparams['use_spk_id'] and spk_map is None:
             with open(pathlib.Path(hparams['work_dir']) / 'spk_map.json', 'r', encoding='utf8') as f:
                 self.spk_map = json.load(f)
             assert isinstance(self.spk_map, dict) and len(self.spk_map) > 0, 'Invalid or empty speaker map!'
             assert len(self.spk_map) == len(set(self.spk_map.values())), 'Duplicate speaker id in speaker map!'
+        elif spk_map is not None:
+            self.spk_map = spk_map
         lang_map_fn = pathlib.Path(hparams['work_dir']) / 'lang_map.json'
         if lang_map_fn.exists():
             with open(lang_map_fn, 'r', encoding='utf8') as f:
                 self.lang_map = json.load(f)
-        self.model: DiffSingerVariance = self.build_model(ckpt_steps=ckpt_steps)
-        self.inference_optimization = optimize_model_for_inference(
-            self.model, model_kind='variance', device=self.device
-        )
+        if lang_map is not None:
+            self.lang_map = lang_map
+        self.model: DiffSingerVariance = model if model is not None else self.build_model(ckpt_steps=ckpt_steps)
+        if model is None:
+            self.inference_optimization = optimize_model_for_inference(
+                self.model, model_kind='variance', device=self.device
+            )
         self.lr = LengthRegulator()
         self.rr = RhythmRegulator()
         smooth_kernel_size = round(hparams['midi_smooth_width'] / self.timestep)
@@ -87,6 +101,12 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+            if uses_dit_backend(hparams):
+                load_dit_lora_for_inference(
+                    model, lora_cfg, work_dir=hparams['work_dir'],
+                    device=self.device
+                )
+                return model.to(self.device)
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))
             targets = lora_cfg.get('target_modules', ['linear'])
@@ -201,6 +221,7 @@ class DiffSingerVarianceInfer(BaseSVSInfer):
         note_dur = torch.diff(note_acc, dim=1, prepend=note_acc.new_zeros(1, 1))
         mel2note = self.lr(note_dur)  # [B=1, T_s]
         T_s = mel2note.shape[1]
+        validate_inference_length(T_s, context='variance')
 
         summary['words'] = T_w
         summary['notes'] = T_n

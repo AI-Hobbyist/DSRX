@@ -2,8 +2,9 @@
 
 The defaults in this module are intentionally inference-only.  Large linear
 layers use FP16 Tensor Core math while the rest of the model and all public
-inputs/outputs stay in FP32.  Rectified-flow velocity backbones are traced and
-frozen once, then warmed with representative time-axis lengths.
+inputs/outputs stay in FP32.  Legacy prediction backbones are traced and frozen
+once. Mask-aware backbones stay eager so dynamic padding masks remain part of
+every inference call.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from utils.hparams import hparams
 
 
 DEFAULT_WARMUP_FRAMES = (128, 512, 2048, 6000, 10000)
+DEFAULT_DIT_WARMUP_FRAMES = (128, 512, 768, 1024)
 DEFAULT_MIN_LINEAR_ELEMENTS = 16_384
 
 
@@ -46,11 +48,22 @@ class SelectiveFP16Linear(nn.Module):
 @dataclass
 class BackboneOptimization:
     name: str
+    attribute: str
+    backend: str = "eager"
+    mask_aware: bool = False
     traced: bool = False
     trace_seconds: float = 0.0
     warmup_frames: List[int] = field(default_factory=list)
     warmup_seconds: float = 0.0
     error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PredictionBackbone:
+    name: str
+    owner: nn.Module
+    attribute: str
+    backbone: nn.Module
 
 
 @dataclass
@@ -102,7 +115,7 @@ def _replace_large_linears(model: nn.Module, minimum_elements: int) -> tuple[int
         for name, child in list(parent.named_children()):
             if isinstance(child, SelectiveFP16Linear):
                 continue
-            if isinstance(child, nn.Linear) and child.weight.numel() >= minimum_elements:
+            if type(child) is nn.Linear and child.weight.numel() >= minimum_elements:
                 converted += 1
                 converted_elements += child.weight.numel()
                 setattr(parent, name, SelectiveFP16Linear(child))
@@ -113,16 +126,25 @@ def _replace_large_linears(model: nn.Module, minimum_elements: int) -> tuple[int
     return converted, converted_elements
 
 
-def _velocity_backbones(model: nn.Module):
+def _prediction_backbones(model: nn.Module):
     for name, module in model.named_modules():
-        velocity_fn = getattr(module, "velocity_fn", None)
-        if isinstance(velocity_fn, nn.Module):
-            yield name, module, velocity_fn
+        for attribute in ("velocity_fn", "denoise_fn"):
+            backbone = getattr(module, attribute, None)
+            if isinstance(backbone, nn.Module):
+                yield PredictionBackbone(
+                    name=name or module.__class__.__name__,
+                    owner=module,
+                    attribute=attribute,
+                    backbone=backbone,
+                )
 
 
-def _parse_warmup_frames(value) -> Sequence[int]:
+def _parse_warmup_frames(
+    value,
+    default=DEFAULT_WARMUP_FRAMES,
+) -> Sequence[int]:
     if value is None:
-        return DEFAULT_WARMUP_FRAMES
+        return default
     if isinstance(value, str):
         value = [part.strip() for part in value.split("|")]
     result = []
@@ -130,23 +152,46 @@ def _parse_warmup_frames(value) -> Sequence[int]:
         frames = int(item)
         if frames > 0 and frames not in result:
             result.append(frames)
-    return result or DEFAULT_WARMUP_FRAMES
+    return result or default
+
+
+def get_backbone_warmup_frames(backbone: nn.Module) -> Sequence[int]:
+    if bool(getattr(backbone, "supports_valid_mask", False)):
+        return _parse_warmup_frames(
+            hparams.get("inference_dit_warmup_frames"),
+            DEFAULT_DIT_WARMUP_FRAMES,
+        )
+    return _parse_warmup_frames(hparams.get("inference_warmup_frames"))
+
+
+def validate_inference_length(frames: int, *, context: str) -> None:
+    maximum = hparams.get("inference_max_frames")
+    if maximum is None:
+        return
+    maximum = int(maximum)
+    if frames > maximum:
+        raise ValueError(
+            f"{context} inference request has {frames} frames, exceeding "
+            f"inference_max_frames={maximum}. Split the request into aligned segments."
+        )
 
 
 def _trace_and_warm_backbone(
     *,
-    name: str,
-    owner: nn.Module,
-    velocity_fn: nn.Module,
+    target: PredictionBackbone,
     device: torch.device,
     warmup_frames: Sequence[int],
 ) -> BackboneOptimization:
-    result = BackboneOptimization(name=name)
+    result = BackboneOptimization(
+        name=target.name,
+        attribute=target.attribute,
+        mask_aware=bool(getattr(target.backbone, "supports_valid_mask", False)),
+    )
     cpu_rng = torch.get_rng_state()
     cuda_rng = torch.cuda.get_rng_state(device)
     try:
-        num_feats = int(owner.num_feats)
-        out_dims = int(owner.out_dims)
+        num_feats = int(target.owner.num_feats)
+        out_dims = int(target.owner.out_dims)
         hidden_size = int(hparams["hidden_size"])
         trace_frames = int(warmup_frames[min(1, len(warmup_frames) - 1)])
         example_spec = torch.randn(
@@ -155,19 +200,24 @@ def _trace_and_warm_backbone(
         example_step = torch.tensor([500.0], device=device)
         example_cond = torch.randn(1, hidden_size, trace_frames, device=device)
 
-        torch.cuda.synchronize(device)
-        started = time.perf_counter()
-        traced = torch.jit.trace(
-            velocity_fn,
-            (example_spec, example_step, example_cond),
-            check_trace=False,
-            strict=False,
-        )
-        traced = torch.jit.freeze(traced.eval())
-        setattr(owner, "velocity_fn", traced)
-        torch.cuda.synchronize(device)
-        result.trace_seconds = time.perf_counter() - started
-        result.traced = True
+        if result.mask_aware:
+            optimized = target.backbone
+            result.backend = "eager_masked"
+        else:
+            torch.cuda.synchronize(device)
+            started = time.perf_counter()
+            optimized = torch.jit.trace(
+                target.backbone,
+                (example_spec, example_step, example_cond),
+                check_trace=False,
+                strict=False,
+            )
+            optimized = torch.jit.freeze(optimized.eval())
+            setattr(target.owner, target.attribute, optimized)
+            torch.cuda.synchronize(device)
+            result.trace_seconds = time.perf_counter() - started
+            result.backend = "torchscript"
+            result.traced = True
 
         del example_spec, example_step, example_cond
         started = time.perf_counter()
@@ -176,18 +226,30 @@ def _trace_and_warm_backbone(
                 spec = torch.randn(1, num_feats, out_dims, frames, device=device)
                 step = torch.tensor([500.0], device=device)
                 cond = torch.randn(1, hidden_size, frames, device=device)
-                traced(spec, step, cond)
+                if result.mask_aware:
+                    valid_mask = torch.ones(
+                        1,
+                        frames,
+                        dtype=torch.bool,
+                        device=device,
+                    )
+                    optimized(spec, step, cond, valid_mask=valid_mask)
+                    del valid_mask
+                else:
+                    optimized(spec, step, cond)
                 torch.cuda.synchronize(device)
                 result.warmup_frames.append(int(frames))
                 del spec, step, cond
         result.warmup_seconds = time.perf_counter() - started
     except Exception as exc:
         if result.traced:
-            setattr(owner, "velocity_fn", velocity_fn)
+            setattr(target.owner, target.attribute, target.backbone)
             result.traced = False
+            result.backend = "eager"
         result.error = f"{type(exc).__name__}: {exc}"
         warnings.warn(
-            f"Inference TorchScript optimization failed for {name}: {result.error}. "
+            f"Inference optimization failed for "
+            f"{target.name}.{target.attribute}: {result.error}. "
             "Continuing with the eager backbone.",
             RuntimeWarning,
         )
@@ -236,22 +298,20 @@ def optimize_model_for_inference(
         report.converted_weight_bytes_fp32 = elements * 4
 
     if bool(hparams.get("inference_torchscript", True)):
-        warmup_frames = _parse_warmup_frames(
-            hparams.get("inference_warmup_frames", DEFAULT_WARMUP_FRAMES)
-        )
-        targets = list(_velocity_backbones(model))
-        for name, owner, velocity_fn in targets:
+        targets = list(_prediction_backbones(model))
+        for target in targets:
             report.backbones.append(
                 _trace_and_warm_backbone(
-                    name=name,
-                    owner=owner,
-                    velocity_fn=velocity_fn,
+                    target=target,
                     device=resolved,
-                    warmup_frames=warmup_frames,
+                    warmup_frames=get_backbone_warmup_frames(target.backbone),
                 )
             )
-        report.torchscript = bool(report.backbones) and all(
-            item.traced for item in report.backbones
+        trace_results = [
+            item for item in report.backbones if not item.mask_aware
+        ]
+        report.torchscript = bool(trace_results) and all(
+            item.traced for item in trace_results
         )
 
     gc.collect()

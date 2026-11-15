@@ -1,0 +1,134 @@
+# Set all_in_one.mini_ddsp.enabled=true to jointly train the built-in vocoder.
+# One command runs acoustic -> variance -> vocoder as separate stages:
+# python scripts/binarize.py --config configs/templates/all_in_one_lynxnet2_muon.yaml --resume
+# Optional vocoder-only preprocessing: python scripts/binarize_vocoder.py --config configs/templates/all_in_one_lynxnet2_muon.yaml --resume
+# All packages use binary_data_dir/{acoustic,variance,vocoder}; no extra output path.
+base_config:
+  - configs/original/acoustic.yaml
+  - configs/original/variance.yaml
+
+task_cls: training.all_in_one_task.AllInOneTask
+binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
+
+# Shared audio/F0/separator settings for all three preprocessing stages.
+# These explicit values preserve the inherited acoustic/variance defaults.
+audio_sample_rate: 44100
+audio_num_mel_bins: 128
+hop_size: 512
+fft_size: 2048
+win_size: 2048
+fmin: 40
+fmax: 16000
+mel_base: e
+pe: parselmouth
+pe_ckpt: ckpt/rmvpe/model.pt
+f0_min: 40
+f0_max: 2000
+hnsep: world
+hnsep_ckpt: ckpt/vr/model.pt
+# Work sample rate if hnsep is changed to vr.
+hnsep_sample_rate: 44100
+# Used only when mini_ddsp.enabled=true; nsf-hifigan remains an explicit option.
+all_in_one_vocoder_backend: mini-ddsp
+
+all_in_one:
+  enabled: true
+  mini_ddsp:
+    enabled: false
+    harmonics: 128
+    noise_bands: 64
+    hidden_size: 256
+    num_layers: 3
+    kernel_size: 31
+    harmonic_group_size: 16
+    harmonic_analysis_cycles: 4
+    segment_frames: 128
+    training_augmentation:
+      random_crop: true
+      volume_enabled: true
+      log_volume_min: -1.0
+      log_volume_max: 1.0
+    warmup_steps: 2000
+    joint_ramp_steps: 2000
+    loss:
+      spectral_weight: 1.0
+      amplitude_weight: 0.3
+      uv_weight: 0.0
+      joint_weight: 1.0
+
+val_with_variance:
+  enable: false
+  # zh:
+  #   - samples/02_不老梦_variance.ds
+  # en:
+  #   - path/to/english.ds
+
+dictionaries:
+  zh: dictionaries/opencpop-extension.txt
+all_phonemes: [AP, SP]
+extra_phonemes: []
+merged_phoneme_groups: []
+
+datasets:
+  - raw_data_dir: data/xxx/raw
+    speaker: speaker
+    spk_id: 0
+    language: zh
+    artifact_level: 0
+    test_prefixes:
+      - wav1
+
+binary_data_dir: data/xxx/binary-all-in-one
+aux_datasets:
+  enable: false
+  module:
+    - pitch
+    - voicing
+  datasets:
+    # Use raw dataset directories like datasets[].raw_data_dir.
+    # Manually refined singing is recommended.
+    data:
+      - zh: data/opencpop
+      - en: data/english-singing
+    val:
+      zh:
+        - prefix_1
+        - prefix_2
+      en: []
+  spk_ids: []  # empty for automatic IDs, or one ID per data entry
+
+binarization_args:
+  resume: false  # --resume reuses complete packages and resumes checkpoints.
+  checkpoint_interval: 16  # Set 1 to commit every source plus its augmentations.
+  shuffle: true
+  num_workers: 0
+  prefer_ds: false
+  allow_missing_phonemes: false
+
+use_lang_id: false
+num_lang: 1
+use_spk_id: false
+num_spk: 1
+use_artifact_embed: false
+use_energy_embed: true
+use_breathiness_embed: true
+use_voicing_embed: true
+use_tension_embed: true
+use_key_shift_embed: true
+use_speed_embed: true
+
+predict_dur: true
+predict_pitch: true
+predict_energy: true
+predict_breathiness: true
+predict_voicing: true
+predict_tension: true
+
+val_with_vocoder: false
+max_batch_frames: 1536
+max_batch_size: 2
+max_val_batch_frames: 768
+max_val_batch_size: 1
+max_sample_frames: 768
+accumulate_grad_batches: 8
+clip_grad_norm: 1.0

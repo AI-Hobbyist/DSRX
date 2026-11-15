@@ -25,6 +25,26 @@ binarization_args:
 binary_data_dir: 'data/xxx/binary'
 binarizer_cls: preprocessing.variance_binarizer.VarianceBinarizer
 
+# Optional module-specific training data. Paths use the same raw dataset
+# format as datasets[].raw_data_dir. scripts/binarize.py writes them to
+# binary_data_dir/aux for training.
+# Manually refined singing data is recommended for auxiliary supervision.
+aux_datasets:
+  enable: false
+  module:
+    - pitch
+    - voicing
+  datasets:
+    data:
+      - zh: data/opencpop
+      - en: data/english-singing
+    val:
+      zh:
+        - prefix_1
+        - prefix_2
+      en: []
+  spk_ids: []  # empty for automatic IDs, or one ID per data entry
+
 use_lang_id: true
 num_lang: 2
 use_spk_id: true

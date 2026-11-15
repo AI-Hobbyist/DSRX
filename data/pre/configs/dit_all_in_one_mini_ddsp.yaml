@@ -1,0 +1,228 @@
+# Copied from data/pre/configs/all_in_one_mini_ddsp_cloud.yaml; original preserved.
+# Migrated from Downloads/dsrx_cfg.7z (aco.yaml and zh dictionary).
+# Only acoustic.yaml and variance.yaml are inherited; network dimensions,
+# AUX, acoustic, pitch and singing backbones use the compact DiT profile.
+# Keep source Muon optimizer, batch limits, augmentation and learning-rate schedule.
+# Single speaker opencpop, five validation sources, energy disabled.
+# Run from repository root after uploading data/opencpop_zh and RMVPE/VR weights:
+# python scripts/binarize.py --config data/pre/configs/dit_all_in_one_mini_ddsp.yaml --resume
+# Optional vocoder-only rebuild: python scripts/binarize_vocoder.py --config data/pre/configs/dit_all_in_one_mini_ddsp.yaml
+# python scripts/train.py --config data/pre/configs/dit_all_in_one_mini_ddsp.yaml --exp_name dit_all_in_one_mini_ddsp
+# Re-run the same training command to resume. No preview checkpoint is loaded.
+# Batch limits are shared by acoustic/variance streams (each receives half).
+base_config:
+- configs/original/acoustic.yaml
+- configs/original/variance.yaml
+dictionaries:
+  zh: data/pre/dictionaries/zh.txt
+datasets:
+- raw_data_dir: data/opencpop
+  speaker: opencpop
+  spk_id: 0
+  language: zh
+  test_prefixes:
+  - '2033001224'
+  - '2070002621'
+  - '2012000457'
+  - '2003000103'
+  - '2082003039'
+binary_data_dir: data/pre/binary/all_in_one_mini_ddsp_cloud
+binarization_args:
+  resume: false  # CLI --resume overrides this; keep completed/partial packages.
+  checkpoint_interval: 16  # Source groups per checkpoint; use 1 for every source.
+  shuffle: true
+  num_workers: 4
+  workers_per_gpu: false
+  prefer_ds: false
+  allow_missing_phonemes: true
+# Shared by acoustic/variance and scripts/binarize_vocoder.py.
+audio_sample_rate: 44100
+audio_num_mel_bins: 128
+hop_size: 512
+fft_size: 2048
+win_size: 2048
+fmin: 40
+fmax: 16000
+mel_base: e
+f0_min: 40
+f0_max: 2000
+pe: rmvpe
+pe_ckpt: ckpt/rmvpe/model.pt
+hnsep: vr
+hnsep_ckpt: ckpt/vr/model.pt
+hnsep_sample_rate: 44100
+augmentation_args:
+  random_pitch_shifting:
+    enabled: true
+    vocoder_enabled: true
+    range:
+    - -18.0
+    - 18.0
+    scale: 1.75
+  fixed_pitch_shifting:
+    enabled: false
+    vocoder_enabled: false
+    targets:
+    - -5.0
+    - 5.0
+    scale: 0.5
+  random_time_stretching:
+    enabled: true
+    vocoder_enabled: false
+    range:
+    - 0.2
+    - 3.0
+    scale: 1.75
+predict_dur: true
+predict_pitch: true
+predict_energy: false
+predict_breathiness: true
+predict_voicing: true
+predict_tension: true
+use_energy_embed: false
+use_breathiness_embed: true
+use_voicing_embed: true
+use_tension_embed: true
+use_key_shift_embed: true
+use_speed_embed: true
+use_melody_encoder: true
+use_lang_id: true
+num_lang: 1
+use_spk_id: true
+num_spk: 1
+all_in_one:
+  enabled: true
+  mini_ddsp:
+    enabled: true
+    harmonics: 128
+    noise_bands: 64
+    hidden_size: 256
+    num_layers: 3
+    kernel_size: 31
+    harmonic_group_size: 16
+    harmonic_analysis_cycles: 4
+    segment_frames: 128
+    training_augmentation:
+      random_crop: true
+      volume_enabled: true
+      log_volume_min: -1.0
+      log_volume_max: 1.0
+    warmup_steps: 2000
+    joint_ramp_steps: 2000
+    loss:
+      spectral_weight: 1.0
+      amplitude_weight: 0.3
+      uv_weight: 0.0
+      joint_weight: 1.0
+all_in_one_vocoder_backend: mini-ddsp
+shallow_diffusion_args:
+  aux_decoder_arch: dit
+  aux_decoder_args:
+    num_channels: 192
+    num_layers: 3
+    num_heads: 3
+    mlp_ratio: 4
+    rope_base: 10000.0
+    layer_norm_eps: 1.0e-06
+    attention_dropout: 0.0
+    mlp_dropout: 0.0
+    use_gradient_checkpointing: true
+  aux_decoder_grad: 1.0
+pl_trainer_accelerator: gpu
+pl_trainer_devices: 1
+pl_trainer_num_nodes: 1
+pl_trainer_precision: bf16-mixed
+max_batch_frames: 50000
+max_batch_size: 64
+ds_workers: 4
+optimizer_args:
+  optimizer_cls: modules.optimizer.muon.Muon_AdamW
+  lr: 0.0006
+  muon_args:
+    weight_decay: 0.1
+  adamw_args:
+    weight_decay: 0.0
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.StepLR
+  step_size: 5000
+  gamma: 0.8
+max_updates: "200ep"
+clip_grad_norm: 1.0
+finetune_enabled: false
+finetune_ckpt_path: null
+freezing_enabled: false
+lora:
+  enabled: false
+aux_datasets:
+  enable: false
+logger_backend: tensorboard
+log_interval: 50
+val_check_interval: "1ep"
+num_sanity_val_steps: 1
+max_val_batch_size: 1
+max_val_batch_frames: 60000
+num_valid_plots: 5
+val_with_vocoder: true
+val_with_variance:
+  enable: true
+  zh:
+  - samples/00_我多想说再见啊_triple.ds
+num_ckpt_keep: 50
+permanent_ckpt_start: 50000
+permanent_ckpt_interval: 10000
+task_cls: training.all_in_one_task.AllInOneTask
+binarizer_cls: preprocessing.all_in_one_binarizer.AllInOneBinarizer
+extra_phonemes:
+- br
+- vf
+merged_phoneme_groups: []
+lambda_aux_mel_loss: 0.2
+hidden_size: 160
+backbone_type: dit
+backbone_args:
+  num_layers: 5
+  num_channels: 256
+  num_heads: 4
+  mlp_ratio: 4
+  time_embed_dim: 128
+  patch_size: 1
+  rope_base: 10000.0
+  layer_norm_eps: 1.0e-06
+  attention_dropout: 0.0
+  mlp_dropout: 0.0
+  use_gradient_checkpointing: true
+pitch_prediction_args:
+  backbone_type: dit
+  backbone_args:
+    num_layers: 3
+    num_channels: 192
+    num_heads: 3
+    mlp_ratio: 4
+    time_embed_dim: 128
+    patch_size: 1
+    rope_base: 10000.0
+    layer_norm_eps: 1.0e-06
+    attention_dropout: 0.0
+    mlp_dropout: 0.0
+    use_gradient_checkpointing: true
+variances_prediction_args:
+  backbone_type: dit
+  backbone_args:
+    num_layers: 3
+    num_channels: 192
+    num_heads: 3
+    mlp_ratio: 4
+    time_embed_dim: 128
+    patch_size: 1
+    rope_base: 10000.0
+    layer_norm_eps: 1.0e-06
+    attention_dropout: 0.0
+    mlp_dropout: 0.0
+    use_gradient_checkpointing: true
+dur_prediction_args:
+  hidden_size: 128
+  num_layers: 3
+finetune_ignored_params: []
+frozen_params: []
+
+enc_layers: 2

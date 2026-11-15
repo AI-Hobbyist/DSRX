@@ -12,18 +12,37 @@ from modules.fastspeech.param_adaptor import VARIANCE_CHECKLIST
 from modules.fastspeech.tts_modules import LengthRegulator
 from modules.toplevel import DiffSingerAcoustic, ShallowDiffusionOutput
 from modules.vocoders.registry import VOCODERS
-from inference.optimization import apply_inference_math_mode, optimize_model_for_inference
+from inference.optimization import (
+    apply_inference_math_mode,
+    optimize_model_for_inference,
+    validate_inference_length,
+)
 from utils import load_ckpt
-from utils.lora import inject_lora, load_lora_state_dict
+from utils.lora import (
+    inject_lora,
+    load_dit_lora_for_inference,
+    load_lora_state_dict,
+    uses_dit_backend, validate_dslight_lora_update, reject_dslight_lora_checkpoint,
+)
 from utils.hparams import hparams
 from utils.infer_utils import cross_fade, resample_align_curve, save_wav
 from utils.phoneme_utils import load_phoneme_dictionary
 
 
 class DiffSingerAcousticInfer(BaseSVSInfer):
-    def __init__(self, device=None, load_model=True, load_vocoder=True, ckpt_steps=None):
+    def __init__(
+        self,
+        device=None,
+        load_model=True,
+        load_vocoder=True,
+        ckpt_steps=None,
+        model=None,
+        spk_map=None,
+        lang_map=None,
+        vocoder=None,
+    ):
         super().__init__(device=device)
-        if load_model:
+        if load_model or model is not None:
             self.variance_checklist = []
 
             self.variances_to_embed = set()
@@ -38,21 +57,28 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                 self.variances_to_embed.add('tension')
 
             self.phoneme_dictionary = load_phoneme_dictionary()
-            if hparams['use_spk_id']:
+            if hparams['use_spk_id'] and spk_map is None:
                 with open(pathlib.Path(hparams['work_dir']) / 'spk_map.json', 'r', encoding='utf8') as f:
                     self.spk_map = json.load(f)
                 assert isinstance(self.spk_map, dict) and len(self.spk_map) > 0, 'Invalid or empty speaker map!'
                 assert len(self.spk_map) == len(set(self.spk_map.values())), 'Duplicate speaker id in speaker map!'
+            elif spk_map is not None:
+                self.spk_map = spk_map
             lang_map_fn = pathlib.Path(hparams['work_dir']) / 'lang_map.json'
             if lang_map_fn.exists():
                 with open(lang_map_fn, 'r', encoding='utf8') as f:
                     self.lang_map = json.load(f)
-            self.model = self.build_model(ckpt_steps=ckpt_steps)
+            if lang_map is not None:
+                self.lang_map = lang_map
+            self.model = model if model is not None else self.build_model(ckpt_steps=ckpt_steps)
             self.lr = LengthRegulator().to(self.device)
-            self.inference_optimization = optimize_model_for_inference(
-                self.model, model_kind='acoustic', device=self.device
-            )
-        if load_vocoder:
+            if model is None:
+                self.inference_optimization = optimize_model_for_inference(
+                    self.model, model_kind='acoustic', device=self.device
+                )
+        if vocoder is not None:
+            self.vocoder = vocoder
+        elif load_vocoder:
             self.vocoder = self.build_vocoder()
 
     def build_model(self, ckpt_steps=None):
@@ -62,6 +88,32 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
         ).eval().to(self.device)
         lora_cfg = hparams.get('lora', {})
         if isinstance(lora_cfg, dict) and lora_cfg.get('enabled', False):
+            if uses_dit_backend(hparams):
+                load_dit_lora_for_inference(
+                    model, lora_cfg, work_dir=hparams['work_dir'],
+                    device=self.device
+                )
+                return model.to(self.device)
+            shallow_args = hparams.get('shallow_diffusion_args', {})
+            uses_dslight = (
+                model.backbone_type == 'dslight'
+                or (model.use_shallow_diffusion and shallow_args.get('aux_decoder_arch') == 'dslight')
+            )
+            if uses_dslight:
+                base_checkpoint = lora_cfg.get('base_ckpt')
+                load_ckpt(
+                    model, base_checkpoint or hparams['work_dir'],
+                    ckpt_steps=None if base_checkpoint else ckpt_steps,
+                    prefix_in_ckpt='model', strict=True, device=self.device,
+                    prefer_inference=True,
+                )
+            else:
+                base_checkpoint = lora_cfg.get('base_ckpt')
+                reject_dslight_lora_checkpoint(
+                    base_checkpoint or hparams['work_dir'],
+                    ckpt_steps=None if base_checkpoint else ckpt_steps,
+                    prefer_inference=True,
+                )
             # Inject LoRA
             rank = int(lora_cfg.get('rank', 8))
             alpha = int(lora_cfg.get('alpha', 16))
@@ -82,6 +134,17 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
                     prefix_in_ckpt='model', strict=False, device=self.device,
                     prefer_inference=True
                 )
+            from utils.training_utils import get_latest_checkpoint_path
+            latest_update = get_latest_checkpoint_path(pathlib.Path(hparams['work_dir']))
+            if latest_update:
+                if uses_dslight:
+                    latest_path = pathlib.Path(latest_update)
+                    inference_path = latest_path.with_suffix('.infer.ckpt')
+                    if not latest_path.name.endswith('.infer.ckpt') and inference_path.is_file():
+                        latest_path = inference_path
+                    validate_dslight_lora_update(model, latest_path)
+                else:
+                    reject_dslight_lora_checkpoint(latest_update, prefer_inference=True)
             # Load latest checkpoint from work_dir if present (full or LoRA-only)
             try:
                 import pathlib as _p
@@ -165,6 +228,7 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
         mel2ph = self.lr(durations, txt_tokens == 0)  # => [B=1, T]
         batch['mel2ph'] = mel2ph
         length = mel2ph.size(1)  # => T
+        validate_inference_length(length, context='acoustic')
 
         summary['tokens'] = txt_tokens.size(1)
         summary['frames'] = length
@@ -295,7 +359,11 @@ class DiffSingerAcousticInfer(BaseSVSInfer):
     @torch.inference_mode()
     def run_vocoder(self, spec, **kwargs):
         y = self.vocoder.spec2wav_torch(spec, **kwargs)
-        return y[None]
+        if y.ndim == 1:
+            y = y[None]
+        if y.ndim != 2 or y.shape[0] != spec.shape[0]:
+            raise ValueError("Vocoder must return one waveform per batch item")
+        return y
 
     def run_inference(
             self, params,

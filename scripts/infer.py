@@ -377,5 +377,162 @@ def variance(
         exit(-1)
 
 
+@main.command(
+    name="all-in-one", help="Run variance and acoustic inference from one checkpoint"
+)
+@click.argument(
+    "proj",
+    type=click.Path(
+        exists=True, dir_okay=False, path_type=pathlib.Path, resolve_path=True
+    ),
+)
+@click.option(
+    "--exp", required=True, callback=lambda ctx, param, value: find_exp(value)
+)
+@click.option("--ckpt", type=click.IntRange(min=0), help="Checkpoint training step")
+@click.option(
+    "--out",
+    type=click.Path(file_okay=False, path_type=pathlib.Path),
+    default="outputs/all_in_one",
+    show_default=True,
+)
+@click.option("--title", help="Output filename without extension")
+@click.option("--lang", default="zh", show_default=True)
+@click.option("--seed", type=int, default=1234, show_default=True)
+@click.option(
+    "--steps", type=click.IntRange(min=1), help="Sampling steps for both models"
+)
+@click.option(
+    "--vocoder-fp32", is_flag=True, help="Disable selective FP16 in the NSF vocoder"
+)
+@click.option(
+    "--vocoder",
+    "vocoder_backend",
+    type=click.Choice(["mini-ddsp", "nsf-hifigan"]),
+    help="Waveform backend for Mini-DDSP models; defaults to internal Mini-DDSP",
+)
+@click.option(
+    "--save-mel",
+    is_flag=True,
+    help="Save the acoustic mel/F0 without running a vocoder",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["auto", "cuda", "cpu"]),
+    default="auto",
+    show_default=True,
+    help="Device for all inference stages",
+)
+def all_in_one(
+    proj,
+    exp,
+    ckpt,
+    out,
+    title,
+    lang,
+    seed,
+    steps,
+    vocoder_fp32,
+    vocoder_backend,
+    save_mel,
+    device="auto",
+):
+    import torch
+
+    if device == "auto":
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    elif device == "cuda" and not torch.cuda.is_available():
+        raise click.ClickException("CUDA was requested but is not available.")
+
+    from inference.ds_acoustic import DiffSingerAcousticInfer
+    from inference.ds_variance import DiffSingerVarianceInfer
+    from modules.toplevel import DiffSingerAllInOne
+    from utils import load_ckpt
+    from utils.hparams import hparams, set_hparams
+    from utils.phoneme_utils import load_phoneme_dictionary
+
+    previous_argv = sys.argv
+    try:
+        sys.argv = [previous_argv[0], '--exp_name', exp, '--infer']
+        set_hparams()
+    finally:
+        sys.argv = previous_argv
+
+    if hparams.get('lora', {}).get('enabled', False):
+        raise click.ClickException(
+            'All-in-one inference requires a full checkpoint with LoRA disabled.'
+        )
+    if steps is not None:
+        hparams['sampling_steps'] = steps
+    if vocoder_fp32:
+        hparams['inference_vocoder_nsf_selective_fp16'] = False
+
+    with proj.open(encoding='utf-8') as source:
+        params = json.load(source)
+    if isinstance(params, dict):
+        params = [params]
+    if not params:
+        raise click.ClickException('The input file is empty.')
+    for param in params:
+        param.setdefault('lang', lang)
+
+    model = DiffSingerAllInOne(
+        vocab_size=len(load_phoneme_dictionary()),
+        out_dims=hparams['audio_num_mel_bins'],
+    ).eval().to(device)
+    load_ckpt(
+        model, hparams['work_dir'], ckpt_steps=ckpt,
+        strict=True, device='cpu', prefer_inference=True,
+    )
+
+    predictions = {
+        name for name in ('dur', 'pitch', 'energy', 'breathiness', 'voicing', 'tension')
+        if hparams.get(f'predict_{name}', False)
+    }
+    name = title or proj.stem
+    variance_title = f'{name}_variance'
+    out.mkdir(parents=True, exist_ok=True)
+    predicted_path = out / f'{variance_title}.ds'
+    if predicted_path.resolve() == proj.resolve():
+        raise click.ClickException(
+            'The variance output would overwrite the input file; choose another --out or --title.'
+        )
+
+    variance_infer = DiffSingerVarianceInfer(
+        device=device, model=model.variance, predictions=predictions,
+    )
+    variance_infer.run_inference(
+        params, out_dir=out, title=variance_title, seed=seed,
+    )
+    with predicted_path.open(encoding='utf-8') as source:
+        predicted = json.load(source)
+    acoustic_options = dict(
+        device=device, model=model.acoustic, load_vocoder=not save_mel
+    )
+    mini_enabled = (
+        hparams.get("all_in_one", {}).get("mini_ddsp", {}).get("enabled", False)
+    )
+    if mini_enabled:
+        acoustic_options["load_vocoder"] = False
+        if not save_mel:
+            from modules.vocoders.all_in_one import build_all_in_one_vocoder
+
+            acoustic_options["vocoder"] = build_all_in_one_vocoder(
+                model, vocoder_backend
+            )
+    elif vocoder_backend is not None:
+        raise click.ClickException(
+            "--vocoder selection requires an enabled Mini-DDSP model"
+        )
+    acoustic_infer = DiffSingerAcousticInfer(**acoustic_options)
+    inference_options = dict(out_dir=out, title=name, seed=seed)
+    if save_mel:
+        inference_options["save_mel"] = True
+    acoustic_infer.run_inference(
+        predicted,
+        **inference_options,
+    )
+
+
 if __name__ == '__main__':
     main()

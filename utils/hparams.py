@@ -12,6 +12,21 @@ from utils.multiprocess_utils import is_main_process as mp_is_main_process
 global_print_hparams = True
 hparams = {}
 
+REPLACE_CONFIG_MAPPINGS = {
+    'aux_datasets',
+    'backbone_args',
+    'aux_decoder_args',
+    'optimizer_args',
+    'lr_scheduler_args',
+}
+
+
+def mini_ddsp_config(config):
+    settings = config.get('all_in_one', {}).get('mini_ddsp', {})
+    if settings.get('enabled', False) and not config.get('all_in_one', {}).get('enabled', False):
+        raise ValueError('Mini-DDSP requires all_in_one.enabled=true')
+    return settings
+
 
 class Args:
     def __init__(self, **kwargs):
@@ -22,7 +37,10 @@ class Args:
 def override_config(old_config: dict, new_config: dict):
     for k, v in new_config.items():
         old_value = old_config.get(k)
-        if isinstance(v, dict) and isinstance(old_value, dict):
+        if (
+                k not in REPLACE_CONFIG_MAPPINGS
+                and isinstance(v, dict) and isinstance(old_value, dict)
+        ):
             override_config(old_value, v)
         else:
             old_config[k] = v
@@ -109,6 +127,8 @@ def set_hparams(config='', exp_name='', hparams_str='', print_hparams=True, glob
                 hparams_[k] = eval(v)
             else:
                 hparams_[k] = type(hparams_[k])(v)
+
+    mini_ddsp_config(hparams_)
 
     @rank_zero_only
     def dump_hparams():

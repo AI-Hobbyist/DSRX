@@ -16,7 +16,7 @@ import librosa
 import numpy as np
 import torch
 
-from basics.base_binarizer import BaseBinarizer
+from basics.base_binarizer import BaseBinarizer, BinarizationError
 from basics.base_pe import BasePE
 from modules.fastspeech.tts_modules import LengthRegulator
 from modules.pe import initialize_pe
@@ -30,7 +30,7 @@ from utils.binarizer_utils import (
     get_tension_base_harmonic,
 )
 from utils.decomposed_waveform import DecomposedWaveform
-from utils.hparams import hparams
+from utils.hparams import hparams, mini_ddsp_config
 
 os.environ["OMP_NUM_THREADS"] = "1"
 ACOUSTIC_ITEM_ATTRIBUTES = [
@@ -57,8 +57,12 @@ tension_smooth: SinusoidalSmoothingConv1d = None
 
 
 class AcousticBinarizer(BaseBinarizer):
-    def __init__(self):
-        super().__init__(data_attrs=ACOUSTIC_ITEM_ATTRIBUTES)
+    def __init__(self, datasets=None, binary_data_dir=None):
+        super().__init__(
+            datasets=datasets,
+            data_attrs=ACOUSTIC_ITEM_ATTRIBUTES,
+            binary_data_dir=binary_data_dir
+        )
         self.artifact_levels = []
         for ds_id, dataset in enumerate(self.datasets):
             artifact_level = int(dataset.get('artifact_level', 0))
@@ -71,10 +75,13 @@ class AcousticBinarizer(BaseBinarizer):
         self.lr = LengthRegulator()
         self.need_energy = hparams['use_energy_embed']
         self.need_breathiness = hparams['use_breathiness_embed']
-        self.need_voicing = hparams['use_voicing_embed']
-        self.need_tension = hparams['use_tension_embed']
-        assert hparams['mel_base'] == 'e', (
-            "Mel base must be set to \'e\' according to 2nd stage of the migration plan. "
+        self.need_voicing = hparams["use_voicing_embed"]
+        self.need_tension = hparams["use_tension_embed"]
+        self.paired_vocoder = mini_ddsp_config(hparams).get("enabled", False)
+        if self.paired_vocoder:
+            self.data_attrs = [*self.data_attrs, "sample_id", "augmentation_id"]
+        assert hparams["mel_base"] == "e", (
+            "Mel base must be set to 'e' according to 2nd stage of the migration plan. "
             "See https://github.com/openvpi/DiffSinger/releases/tag/v2.3.0 for more details."
         )
 
@@ -112,14 +119,28 @@ class AcousticBinarizer(BaseBinarizer):
 
         return meta_data_dict
 
+    def process_dataset(self, prefix, num_workers=0, apply_augmentation=False):
+        self._mini_ddsp_split = prefix
+        return super().process_dataset(prefix, num_workers, apply_augmentation)
+
     @torch.no_grad()
-    def process_item(self, item_name, meta_data, binarization_args):
-        waveform, _ = librosa.load(meta_data['wav_fn'], sr=hparams['audio_sample_rate'], mono=True)
+    def process_item(
+        self, item_name, meta_data, binarization_args, waveform=None, pair_metadata=None
+    ):
+        if waveform is None:
+            waveform, _ = librosa.load(
+                meta_data["wav_fn"], sr=hparams["audio_sample_rate"], mono=True
+            )
         mel = get_mel_torch(
-            waveform, hparams['audio_sample_rate'], num_mel_bins=hparams['audio_num_mel_bins'],
-            hop_size=hparams['hop_size'], win_size=hparams['win_size'], fft_size=hparams['fft_size'],
-            fmin=hparams['fmin'], fmax=hparams['fmax'],
-            device=self.device
+            waveform,
+            hparams["audio_sample_rate"],
+            num_mel_bins=hparams["audio_num_mel_bins"],
+            hop_size=hparams["hop_size"],
+            win_size=hparams["win_size"],
+            fft_size=hparams["fft_size"],
+            fmin=hparams["fmin"],
+            fmax=hparams["fmax"],
+            device=self.device,
         )
         length = mel.shape[0]
         seconds = length * hparams['hop_size'] / hparams['audio_sample_rate']
@@ -234,6 +255,15 @@ class AcousticBinarizer(BaseBinarizer):
         if hparams['use_speed_embed']:
             processed_input['speed'] = 1.
 
+        if self.paired_vocoder:
+            from preprocessing.mini_ddsp_cache import pairing_id
+
+            # Associate all feature augmentations with the original recording.
+            sample_id, augmentation_id = pairing_id(
+                f"{meta_data['spk_name']}:{item_name.split(':', 1)[-1]}"
+            )
+            processed_input["sample_id"] = np.bytes_(sample_id)
+            processed_input["augmentation_id"] = np.bytes_(augmentation_id)
         return processed_input
 
     def arrange_data_augmentation(self, data_iterator):

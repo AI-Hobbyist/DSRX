@@ -98,6 +98,32 @@ The recommended way of building a variance dataset is to extend an acoustic data
 
 Variance models support multi-speaker settings like acoustic models do.
 
+### Auxiliary datasets
+
+`aux_datasets` can replace the training data for selected variance modules while all other enabled modules continue to use the main dataset. This is useful when a smaller, higher-quality corpus has manually refined pitch or variance curves. Manually refined singing data is strongly recommended; automatically extracted labels may remove the quality advantage of auxiliary supervision.
+
+Set `enable` to `true`, select one or more modules from `pitch`, `dur`, `energy`, `breathiness`, `voicing`, and `tension`, and provide raw variance dataset directories in the same format as `datasets[].raw_data_dir`, such as `data/opencpop`. The default module selection is `pitch` and `voicing`. Run `scripts/binarize.py` normally; after processing the main dataset, it writes the auxiliary dataset to `binary_data_dir/aux`. `spk_ids` may be empty for automatic assignment or contain one speaker ID for each `data` entry in the same order. Entries under `val` are validation prefixes and use the same matching rules as `datasets[].test_prefixes`. At least one auxiliary validation prefix is required.
+
+```yaml
+aux_datasets:
+  enable: false
+  module:
+    - pitch
+    - voicing
+  datasets:
+    data:
+      - zh: data/opencpop
+      - en: data/english-singing
+    val:
+      zh:
+        - prefix_1
+        - prefix_2
+      en: []
+  spk_ids: [1, 2]
+```
+
+When enabled, the main batch excludes losses for the selected modules and an auxiliary batch supplies those losses instead. For the joint multi-variance predictor, only selected output channels contribute to the loss; for example, selecting `voicing` does not replace `energy`, `breathiness`, or `tension` supervision.
+
 ### Functionalities
 
 Functionalities of variance models are defined by their outputs. There are three main prediction modules that can be enabled/disable independently:

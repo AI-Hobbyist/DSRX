@@ -218,3 +218,9 @@ class MultiVarianceDiffusionNative(GaussianDiffusionNative, MultiVarianceDiffusi
         x = x * d + m
         x = x.mean(dim=-1)
         return x
+
+
+# Retain the ONNX exporter API alongside the native OpenUtau deployment views.
+GaussianDiffusionONNX = GaussianDiffusionNative
+PitchDiffusionONNX = PitchDiffusionNative
+MultiVarianceDiffusionONNX = MultiVarianceDiffusionNative
