@@ -2,14 +2,17 @@ import torch.nn
 from torch import nn
 
 from .convnext import ConvNeXtDecoder
+from .dit import DiTAuxDecoder
 from .dslight import DSLightAuxDecoder
 from utils import filter_kwargs
 
 AUX_DECODERS = {
+    'dit': DiTAuxDecoder,
     'convnext': ConvNeXtDecoder,
     'dslight': DSLightAuxDecoder,
 }
 AUX_LOSSES = {
+    'dit': nn.L1Loss,
     'convnext': nn.L1Loss,
     'dslight': nn.L1Loss,
 }
@@ -20,9 +23,11 @@ def build_aux_decoder(
         aux_decoder_arch: str, aux_decoder_args: dict
 ) -> torch.nn.Module:
     decoder_cls = AUX_DECODERS[aux_decoder_arch]
-    if aux_decoder_arch == 'dslight':
+    if aux_decoder_arch in ('dslight', 'dit'):
         if not isinstance(aux_decoder_args, dict):
-            raise ValueError('DSLight requires aux_decoder_args to be a mapping.')
+            raise ValueError(
+                f'{aux_decoder_arch} requires aux_decoder_args to be a mapping.'
+            )
         return decoder_cls(in_dims, out_dims, **aux_decoder_args)
     kwargs = filter_kwargs(aux_decoder_args, decoder_cls)
     return AUX_DECODERS[aux_decoder_arch](in_dims, out_dims, **kwargs)
@@ -62,8 +67,11 @@ class AuxDecoderAdaptor(nn.Module):
         b = (self.spec_max + self.spec_min) / 2.
         return x * k + b
 
-    def forward(self, condition, infer=False):
-        x = self.decoder(condition, infer=infer)  # [B, T, F x C]
+    def forward(self, condition, infer=False, valid_mask=None):
+        if getattr(self.decoder, 'supports_valid_mask', False):
+            x = self.decoder(condition, infer=infer, valid_mask=valid_mask)
+        else:
+            x = self.decoder(condition, infer=infer)  # [B, T, F x C]
 
         if self.n_feats > 1:
             # This is the temporary solution since PyTorch 1.13

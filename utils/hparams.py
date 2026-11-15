@@ -13,7 +13,11 @@ global_print_hparams = True
 hparams = {}
 
 REPLACE_CONFIG_MAPPINGS = {
-    'aux_datasets', 'backbone_args', 'optimizer_args', 'lr_scheduler_args'
+    'aux_datasets',
+    'backbone_args',
+    'aux_decoder_args',
+    'optimizer_args',
+    'lr_scheduler_args',
 }
 
 

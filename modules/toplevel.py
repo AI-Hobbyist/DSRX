@@ -128,7 +128,9 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
         valid_mask = mel2ph > 0
         if infer:
             if self.use_shallow_diffusion:
-                aux_mel_pred = self.aux_decoder(condition, infer=True)
+                aux_mel_pred = self.aux_decoder(
+                    condition, infer=True, valid_mask=valid_mask
+                )
                 aux_mel_pred *= ((mel2ph > 0).float()[:, :, None])
                 if gt_mel is not None and self.shallow_args['val_gt_start']:
                     src_mel = gt_mel
@@ -145,7 +147,9 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
             if self.use_shallow_diffusion:
                 if self.train_aux_decoder:
                     aux_cond = condition * self.aux_decoder_grad + condition.detach() * (1 - self.aux_decoder_grad)
-                    aux_out = self.aux_decoder(aux_cond, infer=False)
+                    aux_out = self.aux_decoder(
+                        aux_cond, infer=False, valid_mask=valid_mask
+                    )
                 else:
                     aux_out = None
                 if self.train_diffusion:

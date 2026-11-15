@@ -9,17 +9,26 @@ from torch import Tensor
 from deployment.modules.diffusion import (
     GaussianDiffusionONNX, PitchDiffusionONNX, MultiVarianceDiffusionONNX
 )
+from deployment.modules.dit import DiTBlockONNX
 from deployment.modules.rectified_flow import (
     RectifiedFlowONNX, PitchRectifiedFlowONNX, MultiVarianceRectifiedFlowONNX
 )
 from deployment.modules.fastspeech2 import FastSpeech2AcousticONNX, FastSpeech2VarianceONNX
 from modules.toplevel import DiffSingerAcoustic, DiffSingerVariance
+from modules.aux_decoder.dit import DiTAuxDecoder
 from utils.hparams import hparams
 
 
 class DiffSingerAcousticONNX(DiffSingerAcoustic):
     def __init__(self, vocab_size, out_dims, cross_lingual_token_idx=None):
         super().__init__(vocab_size, out_dims)
+        if self.use_shallow_diffusion and isinstance(
+            self.aux_decoder.decoder, DiTAuxDecoder
+        ):
+            decoder = self.aux_decoder.decoder
+            decoder.blocks = nn.ModuleList(
+                [DiTBlockONNX(block) for block in decoder.blocks]
+            )
         del self.fs2
         del self.diffusion
         self.fs2 = FastSpeech2AcousticONNX(
