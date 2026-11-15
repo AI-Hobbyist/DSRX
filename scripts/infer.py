@@ -416,6 +416,13 @@ def variance(
     is_flag=True,
     help="Save the acoustic mel/F0 without running a vocoder",
 )
+@click.option(
+    "--device",
+    type=click.Choice(["auto", "cuda", "cpu"]),
+    default="auto",
+    show_default=True,
+    help="Device for all inference stages",
+)
 def all_in_one(
     proj,
     exp,
@@ -428,8 +435,14 @@ def all_in_one(
     vocoder_fp32,
     vocoder_backend,
     save_mel,
+    device="auto",
 ):
     import torch
+
+    if device == "auto":
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    elif device == "cuda" and not torch.cuda.is_available():
+        raise click.ClickException("CUDA was requested but is not available.")
 
     from inference.ds_acoustic import DiffSingerAcousticInfer
     from inference.ds_variance import DiffSingerVarianceInfer
@@ -463,7 +476,6 @@ def all_in_one(
     for param in params:
         param.setdefault('lang', lang)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = DiffSingerAllInOne(
         vocab_size=len(load_phoneme_dictionary()),
         out_dims=hparams['audio_num_mel_bins'],

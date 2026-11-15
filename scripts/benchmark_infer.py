@@ -17,12 +17,12 @@ import torch
 
 
 @contextmanager
-def timed_method(cls, timings, name, synchronize, memory):
+def timed_method(cls, timings, name, synchronize, memory, cuda):
     original = cls.run_inference
 
     def measured(instance, *args, **kwargs):
         synchronize()
-        if name == "variance" and torch.cuda.is_available():
+        if name == "variance" and cuda:
             memory["model_loaded_allocated_mib"] = torch.cuda.memory_allocated() / 2**20
         started = time.perf_counter()
         result = original(instance, *args, **kwargs)
@@ -37,7 +37,7 @@ def timed_method(cls, timings, name, synchronize, memory):
         cls.run_inference = original
 
 
-def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
+def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None, device="auto"):
     # Resolve input before moving to the repo root, so callers can use relative
     # paths from any working directory. Model resources keep the CLI's semantics.
     ds_file = Path(ds_file).resolve(strict=True)
@@ -56,7 +56,13 @@ def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
     import utils
     from utils.hparams import hparams
 
-    cuda = torch.cuda.is_available()
+    if device not in {"auto", "cuda", "cpu"}:
+        raise ValueError(f"Unsupported inference device: {device}")
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available.")
+    cuda = device == "cuda"
     if cuda:
         torch.cuda.init()
         torch.cuda.synchronize()
@@ -80,6 +86,7 @@ def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
             path=str(Path(path).resolve()),
             file_mib=Path(path).stat().st_size / 2**20,
             parameters=sum(parameter.numel() for parameter in model.parameters()),
+            device=str(next(model.parameters()).device),
         )
         return path
 
@@ -94,6 +101,8 @@ def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
         "result",
         "--vocoder",
         "mini-ddsp",
+        "--device",
+        device,
     ]
     if ckpt is not None:
         arguments.extend(["--ckpt", str(ckpt)])
@@ -105,13 +114,14 @@ def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
     utils.load_ckpt = record_checkpoint
     try:
         with timed_method(
-            DiffSingerVarianceInfer, timings, "variance", synchronize, memory
+            DiffSingerVarianceInfer, timings, "variance", synchronize, memory, cuda
         ), timed_method(
             DiffSingerAcousticInfer,
             timings,
             "acoustic_and_vocoder",
             synchronize,
             memory,
+            cuda,
         ):
             started = time.perf_counter()
             infer_cli.main(args=arguments, standalone_mode=False)
@@ -147,6 +157,7 @@ def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
             "input_ds": str(ds_file),
             "checkpoint": checkpoint,
             "device": torch.cuda.get_device_name() if cuda else "cpu",
+            "device_type": device,
             "torch_version": torch.__version__,
             "cuda_version": torch.version.cuda,
             "sampling_steps": hparams["sampling_steps"],
@@ -187,6 +198,7 @@ def evaluate(ds_file, exp="dslight", ckpt=None, steps=None, out=None):
         utils.load_ckpt = original_load
         os.chdir(previous_cwd)
     print("\n=== Inference benchmark ===")
+    print(f"Device: {device} ({report['device']})")
     print(
         f"Audio: {duration:.3f}s; pipeline: {pipeline_seconds:.3f}s; total: {total_seconds:.3f}s"
     )
@@ -211,6 +223,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ds_file", type=Path, help="Input DS project")
     parser.add_argument(
+        "--device",
+        choices=["auto", "cuda", "cpu"],
+        default="auto",
+        help="Inference device (default: auto)",
+    )
+    parser.add_argument(
         "--exp", default="dslight", help="Model folder under ckpt (default: dslight)"
     )
     parser.add_argument(
@@ -227,7 +245,14 @@ def main():
         help="Output directory; default: timestamped outputs/benchmark",
     )
     args = parser.parse_args()
-    evaluate(args.ds_file, exp=args.exp, ckpt=args.ckpt, steps=args.steps, out=args.out)
+    evaluate(
+        args.ds_file,
+        exp=args.exp,
+        ckpt=args.ckpt,
+        steps=args.steps,
+        out=args.out,
+        device=args.device,
+    )
 
 
 if __name__ == "__main__":
