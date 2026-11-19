@@ -98,21 +98,60 @@ class MiniDDSPTask(BaseTask):
     def _validation_step(self, sample, batch_idx):
         losses = self.run_model(sample)
         if batch_idx < hparams["num_valid_plots"]:
+            from utils.binarizer_utils import get_mel_torch
+            from utils.plot import spec_to_figure
+
             with torch.no_grad():
                 waveform = self.run_model(sample, infer=True)
+            paired = sample["vocoder"]
+            writer = self.logger.all_rank_experiment
             for index in range(sample["size"]):
-                count = int(sample["vocoder"]["sample_lengths"][index])
-                tag = f"vocoder_{int(sample['indices'][index])}"
+                count = int(paired["sample_lengths"][index])
+                frames = int(paired["frame_lengths"][index])
+                data_index = int(sample["indices"][index])
+                tag = f"vocoder_{data_index}"
+                reconstructed = waveform[index, :count]
                 for name, audio in (
-                    ("reference", sample["vocoder"]["waveform"]),
-                    ("prediction", waveform),
+                    ("reference", paired["waveform"][index, :count]),
+                    ("prediction", reconstructed),
                 ):
-                    self.logger.all_rank_experiment.add_audio(
+                    writer.add_audio(
                         f"{tag}/{name}",
-                        audio[index, :count],
+                        audio,
                         sample_rate=hparams["audio_sample_rate"],
                         global_step=self.global_step,
                     )
+                predicted_mel = get_mel_torch(
+                    reconstructed.detach().float().cpu().numpy(),
+                    hparams["audio_sample_rate"],
+                    num_mel_bins=hparams["audio_num_mel_bins"],
+                    hop_size=hparams["hop_size"],
+                    win_size=hparams["win_size"],
+                    fft_size=hparams["fft_size"],
+                    fmin=hparams["fmin"],
+                    fmax=hparams["fmax"],
+                    device=self.device,
+                )
+                length = min(frames, predicted_mel.shape[0])
+                reference = paired["mel"][index, :length].detach().cpu()
+                prediction = torch.from_numpy(predicted_mel[:length]).to(reference)
+                vmin = hparams.get("mel_vmin", -14.0)
+                vmax = hparams.get("mel_vmax", 4.0)
+                # The figure's vertical axis starts at the bottom.
+                comparison = torch.cat(
+                    [(prediction - reference).abs() + vmin, reference, prediction],
+                    dim=-1,
+                )
+                writer.add_figure(
+                    f"dataset_vocoder_{data_index}",
+                    spec_to_figure(
+                        comparison,
+                        vmin,
+                        vmax,
+                        "Reconstruction / Reference / Absolute error",
+                    ),
+                    global_step=self.global_step,
+                )
         return losses, sample["size"]
 
     @rank_zero_only
