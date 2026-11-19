@@ -65,7 +65,9 @@ def merge_vocoder_weights(aio_checkpoint, vocoder_checkpoint, config):
         if key.startswith(prefix)
     }
     if not expected:
-        raise ValueError("AIO checkpoint must contain a complete built-in Mini-DDSP")
+        from modules.vocoders.mini_ddsp import MiniDDSP
+
+        expected = MiniDDSP(config).state_dict()
     if source.keys() != expected.keys():
         raise ValueError(
             "Vocoder state keys differ: "

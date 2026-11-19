@@ -1,6 +1,7 @@
-"""Package independent Mini-DDSP weights into a new AIO inference experiment."""
+"""Embed independent Mini-DDSP or NSF-HiFiGAN weights in an AIO experiment."""
 
 import argparse
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -13,6 +14,34 @@ sys.path.insert(0, str(ROOT))
 
 from utils.hparams import set_hparams
 from utils.mini_ddsp_checkpoint import merge_vocoder_weights
+
+
+def merge_nsf_weights(aio_checkpoint, vocoder_checkpoint, config, metadata):
+    from modules.vocoders.all_in_one import build_embedded_nsf, validate_nsf_contract
+
+    if aio_checkpoint.get("category") != "all_in_one":
+        raise ValueError("The destination checkpoint must be all_in_one")
+    validate_nsf_contract(config, metadata)
+    generator = build_embedded_nsf(metadata)
+    generator.load_state_dict(vocoder_checkpoint["generator"], strict=True)
+    prefix = "model.vocoder."
+    state = {
+        name: tensor
+        for name, tensor in aio_checkpoint["state_dict"].items()
+        if not name.startswith(prefix)
+    }
+    state.update(
+        {prefix + name: tensor for name, tensor in generator.state_dict().items()}
+    )
+    return {
+        "category": "all_in_one",
+        "state_dict": state,
+        "global_step": 0,
+        "vocoder_merge": {
+            "aio_step": aio_checkpoint.get("global_step"),
+            "backend": "nsf-hifigan",
+        },
+    }
 
 
 def merge_experiment(aio_path, vocoder_path, output_dir, config_path=None):
@@ -32,7 +61,37 @@ def merge_experiment(aio_path, vocoder_path, output_dir, config_path=None):
     vocoder_checkpoint = torch.load(
         vocoder_path, map_location="cpu", weights_only=False
     )
-    merged = merge_vocoder_weights(aio_checkpoint, vocoder_checkpoint, config)
+    aio_settings = config.setdefault("all_in_one", {})
+    aio_settings["enabled"] = True
+    mini = aio_settings.setdefault("mini_ddsp", {})
+    if vocoder_checkpoint.get("category") == "vocoder":
+        replacing_nsf = aio_settings.pop("embedded_nsf", None) is not None
+        has_vocoder = any(
+            key.startswith("model.vocoder.") for key in aio_checkpoint["state_dict"]
+        )
+        if replacing_nsf:
+            aio_checkpoint = {
+                **aio_checkpoint,
+                "state_dict": {
+                    key: value
+                    for key, value in aio_checkpoint["state_dict"].items()
+                    if not key.startswith("model.vocoder.")
+                },
+            }
+        if replacing_nsf or not has_vocoder:
+            mini.update(vocoder_checkpoint["mini_ddsp_contract"]["model"])
+        mini["enabled"] = True
+        merged = merge_vocoder_weights(aio_checkpoint, vocoder_checkpoint, config)
+    elif "generator" in vocoder_checkpoint:
+        metadata = json.loads(
+            vocoder_path.with_name("config.json").read_text(encoding="utf-8")
+        )
+        merged = merge_nsf_weights(aio_checkpoint, vocoder_checkpoint, config, metadata)
+        mini["enabled"] = False
+        aio_settings["embedded_nsf"] = metadata
+    else:
+        raise ValueError("Expected a standalone Mini-DDSP or NSF-HiFiGAN generator")
+    config.pop("all_in_one_vocoder_backend", None)
     merged["vocoder_merge"].update(aio=str(aio_path), vocoder=str(vocoder_path))
 
     filenames = [f"dictionary-{language}.txt" for language in config["dictionaries"]]
@@ -70,7 +129,10 @@ def main():
         "--aio", required=True, type=Path, help="Full AIO training checkpoint"
     )
     parser.add_argument(
-        "--vocoder", required=True, type=Path, help="Independent Mini-DDSP checkpoint"
+        "--vocoder",
+        required=True,
+        type=Path,
+        help="Standalone Mini-DDSP or NSF-HiFiGAN generator checkpoint",
     )
     parser.add_argument(
         "--out", required=True, type=Path, help="New experiment directory under ckpt"

@@ -97,7 +97,9 @@ class AllInOneTask(AcousticTask):
         self.load_state_dict(initialized, strict=True)
 
     def _build_vocoder(self):
-        if self.mini_ddsp_settings.get("enabled", False):
+        if self.mini_ddsp_settings.get("enabled", False) or hparams.get(
+            "all_in_one", {}
+        ).get("embedded_nsf"):
             from modules.vocoders.all_in_one import build_all_in_one_vocoder
 
             return build_all_in_one_vocoder(

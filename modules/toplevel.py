@@ -44,6 +44,10 @@ class DiffSingerAllInOne(CategorizedModule):
             from modules.vocoders.mini_ddsp import MiniDDSP
 
             self.vocoder = MiniDDSP(hparams)
+        elif metadata := hparams.get('all_in_one', {}).get('embedded_nsf'):
+            from modules.vocoders.all_in_one import build_embedded_nsf
+
+            self.vocoder = build_embedded_nsf(metadata)
 
 
 class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):

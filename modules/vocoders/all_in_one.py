@@ -76,7 +76,27 @@ class AllInOneVocoder(BaseVocoder):
         return waveform.squeeze(0).cpu().numpy()
 
 
+def build_embedded_nsf(metadata):
+    from modules.nsf_hifigan.env import AttrDict
+    from modules.nsf_hifigan.models import Generator
+
+    generator = Generator(AttrDict(metadata))
+    return generator.requires_grad_(False).eval()
+
+
+class EmbeddedNsfVocoder(AllInOneVocoder):
+    @torch.inference_mode()
+    def spec2wav_torch(self, mel, f0, **kwargs):
+        if f0.ndim == 3 and f0.shape[-1] == 1:
+            f0 = f0.squeeze(-1)
+        return self.backend(mel.transpose(1, 2), f0.float()).squeeze(1)
+
+
 def build_all_in_one_vocoder(model, backend=None):
+    if hparams["all_in_one"].get("embedded_nsf"):
+        if backend not in (None, "nsf-hifigan"):
+            raise ValueError("This AIO checkpoint contains an embedded NSF-HiFiGAN")
+        return EmbeddedNsfVocoder(model.vocoder, internal=True)
     if not mini_ddsp_config(hparams).get("enabled", False):
         raise ValueError("All-in-one vocoder selection requires Mini-DDSP enabled")
     backend = backend or "mini-ddsp"

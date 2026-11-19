@@ -409,7 +409,7 @@ def variance(
     "--vocoder",
     "vocoder_backend",
     type=click.Choice(["mini-ddsp", "nsf-hifigan"]),
-    help="Waveform backend for Mini-DDSP models; defaults to internal Mini-DDSP",
+    help="Waveform backend; defaults to the embedded vocoder when available",
 )
 @click.option(
     "--save-mel",
@@ -512,7 +512,7 @@ def all_in_one(
     mini_enabled = (
         hparams.get("all_in_one", {}).get("mini_ddsp", {}).get("enabled", False)
     )
-    if mini_enabled:
+    if mini_enabled or hparams.get("all_in_one", {}).get("embedded_nsf"):
         acoustic_options["load_vocoder"] = False
         if not save_mel:
             from modules.vocoders.all_in_one import build_all_in_one_vocoder
@@ -522,7 +522,7 @@ def all_in_one(
             )
     elif vocoder_backend is not None:
         raise click.ClickException(
-            "--vocoder selection requires an enabled Mini-DDSP model"
+            "--vocoder selection requires an embedded vocoder"
         )
     acoustic_infer = DiffSingerAcousticInfer(**acoustic_options)
     inference_options = dict(out_dir=out, title=name, seed=seed)

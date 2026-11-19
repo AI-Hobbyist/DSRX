@@ -43,7 +43,9 @@ all_in_one:
 
 ## 合并为一个推理实验
 
-选择匹配的独立声码器 checkpoint，以及一个已经包含内置 Mini-DDSP 的完整 AIO checkpoint。音频参数和声码器尺寸必须一致，声学网络可以是 17.2M 或 40M DiT：
+选择音频参数兼容的独立声码器 checkpoint 和完整 AIO checkpoint。
+关闭声码器联合训练得到的 AIO 可以直接装入声码器。已有 Mini-DDSP 的 AIO
+也可以用同结构的独立权重替换。
 
 ```bash
 python scripts/merge_vocoder.py \
@@ -58,6 +60,12 @@ python scripts/merge_vocoder.py \
 - 仅替换 `model.vocoder.*`，包括合成资源；其余 checkpoint 权重保持原值。
 - 输出 `model_ckpt_steps_0.ckpt`、完整配置及原 AIO 的词典/语言/说话人映射。
 - 不携带旧优化器、调度器或 Trainer 恢复状态，记录来源与原训练步数。
+
+合入 NSF-HiFiGAN 时，`--vocoder` 指向包含 `generator` 的 NSF-HiFiGAN
+checkpoint，旁边须有对应的 `config.json`。合并时会把生成器权重写入同一份 AIO
+checkpoint，并将网络参数写入输出的 `config.yaml`。推理默认使用内置后端，
+输出目录可脱离原声码器文件使用。NSF-HiFiGAN 合并产物支持验证试听和推理，
+Mini-DDSP 的联合训练损失仅适用于 Mini-DDSP 后端。
 
 随后仍用同一 AIO 推理入口，例如：
 
