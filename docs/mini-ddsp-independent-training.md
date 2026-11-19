@@ -7,7 +7,7 @@
 已有 `binary_data_dir/vocoder/{train,valid}.data/.meta` 及 `audio_contract.json` 时可复用，无需重做。默认路径仍为 `data/pre/binary/all_in_one_mini_ddsp_cloud/vocoder`。缺少包时：
 
 ```bash
-python scripts/binarize_vocoder.py --config configs/vocoder/mini_ddsp_opencpop.yaml --resume
+python scripts/binarize_vocoder.py --config configs/vocoder/mini_ddsp_train.yaml --resume
 ```
 
 独立训练使用原入口：
@@ -16,9 +16,30 @@ python scripts/binarize_vocoder.py --config configs/vocoder/mini_ddsp_opencpop.y
 python scripts/train.py --config configs/vocoder/mini_ddsp_train.yaml --exp_name mini_ddsp_pretrain
 ```
 
-配置继承原 audio-only 预处理模板，显式提供与 AIO 一致的声码器尺寸。`all_in_one.mini_ddsp` 是已有模型设置命名空间，`task_cls` 决定这里只实例化声码器。修改数据/音频设置后须按现有预处理规则核对数据包；训练时会校验音频契约。验证使用中心裁片、不做音量增强，并记录参考/预测试听。正常训练 checkpoint 仍由原 Lightning 管线保存，分类为 `vocoder`，嵌入声码器结构和音频参数供合并检查。
+同一份配置集中管理数据集路径、预处理、音频、声码器尺寸、增强和训练设置，声码器尺寸与 AIO 一致。`all_in_one.mini_ddsp` 是已有模型设置命名空间，`task_cls` 决定这里只实例化声码器。修改数据/音频设置后须按现有预处理规则核对数据包；训练时会校验音频契约。验证使用中心裁片、不做音量增强，并记录参考/预测试听。正常训练 checkpoint 仍由原 Lightning 管线保存，分类为 `vocoder`，嵌入声码器结构和音频参数供合并检查。
 
 重复同一训练命令是正式训练续跑用法；本次不会为验证而反复启停、加载或重建模型。
+
+## 从零训练 AIO 时用预训练声码器试听
+
+在 AIO 训练配置中设置以下字段。将 `all_in_one.mini_ddsp.enabled` 改为
+`false`，并保留同级的其他 AIO 设置。
+
+```yaml
+finetune_enabled: false
+val_with_vocoder: true
+vocoder: MiniDDSPVocoder
+vocoder_ckpt: ckpt/mini_ddsp_pretrain/model_ckpt_steps_20000.ckpt
+num_valid_plots: 5
+all_in_one:
+  enabled: true
+  mini_ddsp:
+    enabled: false
+```
+
+将路径换成实际独立训练权重，用新的 `--exp_name` 启动训练。验证通过原来的
+试听入口合成音频，声码器不参与优化，也不会写入 AIO checkpoint。
+独立声码器与 AIO 的音频参数必须一致。
 
 ## 合并为一个推理实验
 
