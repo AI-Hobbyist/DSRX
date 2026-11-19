@@ -1,0 +1,46 @@
+# Independent Mini-DDSP pretraining; reuse binary_data_dir/vocoder packages.
+# python scripts/train.py --config configs/vocoder/mini_ddsp_train.yaml --exp_name mini_ddsp_pretrain
+base_config:
+  - configs/original/base.yaml
+  - configs/vocoder/mini_ddsp_opencpop.yaml
+
+task_cls: training.vocoder_task.MiniDDSPTask
+
+# This shared namespace describes the same Mini-DDSP used by AIO. The task
+# instantiates only MiniDDSP, without acoustic/variance models or dictionaries.
+all_in_one:
+  enabled: true
+  mini_ddsp:
+    enabled: true
+    harmonics: 128
+    noise_bands: 64
+    hidden_size: 256
+    num_layers: 3
+    kernel_size: 31
+    harmonic_group_size: 16
+    loss:
+      spectral_weight: 1.0
+      amplitude_weight: 0.3
+
+optimizer_args:
+  optimizer_cls: torch.optim.AdamW
+  lr: 0.0006
+  weight_decay: 0.0
+lr_scheduler_args:
+  scheduler_cls: torch.optim.lr_scheduler.StepLR
+  step_size: 5000
+  gamma: 0.8
+
+pl_trainer_accelerator: gpu
+pl_trainer_devices: 1
+pl_trainer_precision: bf16-mixed
+max_batch_frames: 16000
+max_batch_size: 16
+max_val_batch_frames: 60000
+max_val_batch_size: 1
+max_updates: 200ep
+val_check_interval: 1ep
+num_valid_plots: 5
+num_ckpt_keep: 5
+permanent_ckpt_start: 0
+permanent_ckpt_interval: 0

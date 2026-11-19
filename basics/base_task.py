@@ -58,6 +58,8 @@ class BaseTask(pl.LightningModule):
             postprocess the validation output.
     """
 
+    requires_phoneme_dictionary = True
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_batch_frames = hparams['max_batch_frames']
@@ -73,7 +75,9 @@ class BaseTask(pl.LightningModule):
         self.skip_immediate_validation = False
         self.skip_immediate_ckpt_save = False
 
-        self.phoneme_dictionary = load_phoneme_dictionary()
+        self.phoneme_dictionary = (
+            load_phoneme_dictionary() if self.requires_phoneme_dictionary else None
+        )
         self.build_model()
         # Inject LoRA if enabled
         lora_cfg = hparams.get('lora', {})
@@ -453,6 +457,19 @@ class BaseTask(pl.LightningModule):
     # Running configuration
     ###########
 
+    @rank_zero_only
+    def copy_training_payload(self, work_dir):
+        binary_dir = pathlib.Path(hparams['binary_data_dir'])
+        if hparams.get('all_in_one', {}).get('enabled', False):
+            binary_dir /= 'acoustic'
+        for filename in ('spk_map.json', 'lang_map.json'):
+            shutil.copy(binary_dir / filename, work_dir / filename)
+            print(f'| Copied {filename} to {work_dir / filename}.')
+        for lang in hparams['dictionaries']:
+            filename = f'dictionary-{lang}.txt'
+            shutil.copy(binary_dir / filename, work_dir / filename)
+            print(f'| Copied dictionary for language \'{lang}\' to {work_dir / filename}.')
+
     @classmethod
     def start(cls):
         task = cls()
@@ -524,27 +541,7 @@ class BaseTask(pl.LightningModule):
             accumulate_grad_batches=hparams['accumulate_grad_batches']
         )
         if not hparams['infer']:  # train
-            @rank_zero_only
-            def train_payload_copy():
-                # Copy files to work_dir
-                binary_dir = pathlib.Path(hparams['binary_data_dir'])
-                if hparams.get('all_in_one', {}).get('enabled', False):
-                    binary_dir /= 'acoustic'
-                spk_map_dst = work_dir / 'spk_map.json'
-                spk_map_src = binary_dir / 'spk_map.json'
-                shutil.copy(spk_map_src, spk_map_dst)
-                print(f'| Copied spk map to {spk_map_dst}.')
-                lang_map_dst = work_dir / 'lang_map.json'
-                lang_map_src = binary_dir / 'lang_map.json'
-                shutil.copy(lang_map_src, lang_map_dst)
-                print(f'| Copied lang map to {lang_map_dst}.')
-                for lang in hparams['dictionaries'].keys():
-                    dict_dst = work_dir / f'dictionary-{lang}.txt'
-                    dict_src = binary_dir / f'dictionary-{lang}.txt'
-                    shutil.copy(dict_src, dict_dst)
-                    print(f'| Copied dictionary for language \'{lang}\' to {dict_dst}.')
-
-            train_payload_copy()
+            task.copy_training_payload(work_dir)
             trainer.fit(task, ckpt_path=get_latest_checkpoint_path(work_dir))
         else:
             trainer.test(task)
